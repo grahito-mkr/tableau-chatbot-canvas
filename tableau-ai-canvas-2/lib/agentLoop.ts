@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { getDatasourceMetadata, queryDatasource, type FieldSpec, type SetFilter } from "./tableauClient";
+import { getDatasourceMetadata, queryDatasource, type FieldSpec, type QueryFilter } from "./tableauClient";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -14,7 +14,9 @@ const tools: Anthropic.Tool[] = [
   {
     name: "query_data",
     description:
-      "Run a live query against the Tableau datasource and return real rows. Always call this before emit_widget so numbers are real, not guessed.",
+      "Run a live query against the Tableau datasource and return real rows. Always call this before emit_widget so numbers are real, not guessed. " +
+      "Any filters currently set in the user's filter bar (e.g. a date range or a selected branch) are already applied automatically to every call " +
+      "of this tool - you don't need to repeat them, but you may add additional `filters` on top if the user's question asks for something more specific.",
     input_schema: {
       type: "object",
       properties: {
@@ -68,7 +70,7 @@ const tools: Anthropic.Tool[] = [
         },
         encoding: {
           type: "object",
-          description: "For bar/line charts: which fields map to columns/rows/color.",
+          description: "For bar/line charts: which fields map to columns/rows/color. Every value here must be an exact key present in `data` rows.",
           properties: {
             columns: { type: "string" },
             rows: { type: "string" },
@@ -87,14 +89,24 @@ export type Widget = {
   type: "kpi" | "bar" | "line" | "table";
   data: Record<string, unknown>[];
   encoding?: { columns?: string; rows?: string; color?: string };
+  // The exact fields this widget's data was queried with. Captured from the
+  // query_data call that preceded this widget's emit_widget call, so the
+  // frontend's global filter bar can re-run the same query with new filters
+  // and refresh this widget in place, without going back through the LLM.
+  sourceQuery?: { fields: FieldSpec[] };
 };
 
-async function executeTool(name: string, input: any): Promise<unknown> {
+async function executeTool(name: string, input: any, baseFilters: QueryFilter[]): Promise<unknown> {
   switch (name) {
     case "list_fields":
       return getDatasourceMetadata();
-    case "query_data":
-      return queryDatasource(input.fields as FieldSpec[], (input.filters as SetFilter[]) || []);
+    case "query_data": {
+      // Global filter-bar filters are merged in here unconditionally, so they
+      // always apply even if the model forgets to mention them - the model's
+      // own filters (if any) are appended after, letting it narrow further.
+      const modelFilters = (input.filters as QueryFilter[]) || [];
+      return queryDatasource(input.fields as FieldSpec[], [...baseFilters, ...modelFilters]);
+    }
     default:
       return { error: `unknown tool ${name}` };
   }
@@ -111,12 +123,16 @@ export async function runAgentLoop(
   systemPrompt: string,
   userPrompt: string,
   onWidget: (widget: Widget) => void,
-  maxTurns = 8
+  maxTurns = 8,
+  baseFilters: QueryFilter[] = []
 ): Promise<string> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userPrompt }];
   let widgetCounter = 0;
   let finalText = "";
   let lastError: string | null = null;
+  // The fields from the most recent query_data call, so we can tag the next
+  // emit_widget with the query that produced its data (see Widget.sourceQuery).
+  let lastQueryFields: FieldSpec[] | null = null;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await anthropic.messages.create({
@@ -151,7 +167,8 @@ export async function runAgentLoop(
           title: input.title,
           type: input.type,
           data: input.data,
-          encoding: input.encoding
+          encoding: input.encoding,
+          ...(lastQueryFields ? { sourceQuery: { fields: lastQueryFields } } : {})
         });
         toolResults.push({
           type: "tool_result",
@@ -161,8 +178,12 @@ export async function runAgentLoop(
         continue;
       }
 
+      if (block.name === "query_data") {
+        lastQueryFields = (block.input as any).fields || null;
+      }
+
       try {
-        const result = await executeTool(block.name, block.input);
+        const result = await executeTool(block.name, block.input, baseFilters);
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
