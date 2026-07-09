@@ -50,7 +50,16 @@ async function signIn(): Promise<Session> {
 }
 
 export type FieldSpec = { fieldCaption: string; function?: "SUM" | "AVG" | "COUNT" | "MIN" | "MAX"; sortPriority?: number };
-export type SetFilter = { field: string; values: string[]; exclude?: boolean };
+
+// Categorical filter, e.g. Branch in ["Jakarta", "Bandung"].
+export type SetFilter = { field: string; type?: "set"; values: string[]; exclude?: boolean };
+// Range filter, e.g. Order Date between two dates, or a numeric range.
+// NOTE: like the rest of this VDS integration, the exact filterType string
+// VDS expects for ranges (QUANTITATIVE_DATE vs QUANTITATIVE_NUMERICAL vs a
+// generic shape) may need adjusting against your live server - see README's
+// "Known simplifications".
+export type RangeFilter = { field: string; type: "range"; min?: string | number; max?: string | number };
+export type QueryFilter = SetFilter | RangeFilter;
 
 /**
  * Fetch the list of fields (dimensions/measures) available on the configured
@@ -80,7 +89,7 @@ export async function getDatasourceMetadata() {
  * Every number returned here is real - queried live from Tableau, never
  * invented by the model.
  */
-export async function queryDatasource(fields: FieldSpec[], filters: SetFilter[] = []) {
+export async function queryDatasource(fields: FieldSpec[], filters: QueryFilter[] = []) {
   const session = await signIn();
   const luid = process.env.TABLEAU_DATASOURCE_LUID!;
 
@@ -92,12 +101,22 @@ export async function queryDatasource(fields: FieldSpec[], filters: SetFilter[] 
         ...(f.function ? { function: f.function } : {}),
         ...(f.sortPriority ? { sortPriority: f.sortPriority } : {})
       })),
-      filters: filters.map((f) => ({
-        field: { fieldCaption: f.field },
-        filterType: "SET",
-        values: f.values,
-        exclude: !!f.exclude
-      }))
+      filters: filters.map((f) => {
+        if (f.type === "range") {
+          return {
+            field: { fieldCaption: f.field },
+            filterType: "QUANTITATIVE_DATE",
+            min: f.min,
+            max: f.max
+          };
+        }
+        return {
+          field: { fieldCaption: f.field },
+          filterType: "SET",
+          values: (f as SetFilter).values,
+          exclude: !!(f as SetFilter).exclude
+        };
+      })
     }
   };
 
