@@ -15,6 +15,35 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
   const col = columnsField || keys[0];
   const row = rowsField || keys[1];
 
+  // Whether a field's values are actually numeric - used to decide Discrete
+  // vs Continuous per field, instead of assuming columns is always the
+  // category and rows is always the measure. That assumption broke as soon
+  // as someone asked for a horizontal bar chart (measure on columns,
+  // category on rows): Tableau rejected it with "Field X has unsupported
+  // data" because a text field was being sent as Continuous.
+  const isNumericField = (field: string | undefined) => {
+    if (!field) return false;
+    return widget.data.every((r) => {
+      const v = (r as Record<string, unknown>)[field];
+      return (
+        v === null ||
+        v === undefined ||
+        typeof v === "number" ||
+        (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)))
+      );
+    });
+  };
+
+  const { Discrete, Continuous } = tableau.VizImageEncodingType;
+  const colType = isNumericField(col) ? Continuous : Discrete;
+  const rowType = isNumericField(row) ? Continuous : Discrete;
+
+  // The on-bar value label should point at whichever field is the actual
+  // numeric measure, wherever it ended up (columns or rows) - not hardcoded
+  // to `row`, since that's not always the measure (see above).
+  const measureField = isNumericField(row) ? row : isNumericField(col) ? col : row;
+  const measureType = isNumericField(measureField) ? Continuous : Discrete;
+
   // `color` in the Tableau Viz spec must reference a real field in the data
   // (it's a data-driven encoding, not a way to set a literal color like
   // "green"). If the model hallucinated a color name instead of a field that
@@ -28,11 +57,11 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
     data: { values: widget.data },
     mark: widget.type === "line" ? tableau.MarkType.Line : tableau.MarkType.Bar,
     encoding: {
-      columns: { field: col, type: tableau.VizImageEncodingType.Discrete },
-      rows: { field: row, type: tableau.VizImageEncodingType.Continuous },
+      columns: { field: col, type: colType },
+      rows: { field: row, type: rowType },
       // Print the value on top of each bar/point, matching a normal Tableau chart.
-      text: { field: row, type: tableau.VizImageEncodingType.Continuous },
-      ...(colorField ? { color: { field: colorField, type: tableau.VizImageEncodingType.Discrete } } : {})
+      text: { field: measureField, type: measureType },
+      ...(colorField ? { color: { field: colorField, type: Discrete } } : {})
     }
   };
 }
