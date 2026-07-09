@@ -23,24 +23,63 @@ export default function ExtensionPage() {
   const [busy, setBusy] = useState(false);
   const [widgets, setWidgets] = useState<Widget[]>([]);
   const [layout, setLayout] = useState<Layout[]>([]);
+  const [initError, setInitError] = useState<string | null>(null);
   const nextY = useRef(0);
+  const initStarted = useRef(false);
+
+  function initTableau() {
+    if (initStarted.current) return; // avoid double-initializing (onLoad + poll can both fire)
+    if (!window.tableau) return;
+    initStarted.current = true;
+
+    window.tableau.extensions
+      .initializeAsync()
+      .then(() => {
+        setReady(true);
+        const saved = window.tableau!.extensions.settings.get(SETTINGS_KEY);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            setWidgets(parsed.widgets || []);
+            setLayout(parsed.layout || []);
+          } catch {
+            /* ignore corrupt settings */
+          }
+        }
+      })
+      .catch((err: any) => {
+        initStarted.current = false;
+        setInitError(err?.message || String(err));
+      });
+  }
 
   // 1. Initialize the Tableau Extensions API + restore any saved canvas.
+  //
+  // The <Script> tag's onLoad handles the normal case. This effect is a
+  // safety net for when the script was already cached/loaded before this
+  // component mounted (onLoad wouldn't fire again) - it polls briefly for
+  // window.tableau to show up instead of silently giving up after one check.
   useEffect(() => {
-    if (!window.tableau) return;
-    window.tableau.extensions.initializeAsync().then(() => {
-      setReady(true);
-      const saved = window.tableau!.extensions.settings.get(SETTINGS_KEY);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          setWidgets(parsed.widgets || []);
-          setLayout(parsed.layout || []);
-        } catch {
-          /* ignore corrupt settings */
-        }
+    if (window.tableau) {
+      initTableau();
+      return;
+    }
+    const interval = setInterval(() => {
+      if (window.tableau) {
+        initTableau();
+        clearInterval(interval);
       }
-    });
+    }, 200);
+    const giveUp = setTimeout(() => {
+      clearInterval(interval);
+      if (!initStarted.current) {
+        setInitError("window.tableau never became available (script may have failed to load or been blocked).");
+      }
+    }, 15000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(giveUp);
+    };
   }, []);
 
   // 2. Persist canvas state whenever it changes.
@@ -112,7 +151,12 @@ export default function ExtensionPage() {
 
   return (
     <>
-      <Script src="https://tableau.github.io/extensions-api/lib/tableau.extensions.1.latest.js" strategy="beforeInteractive" />
+      <Script
+        src="https://tableau.github.io/extensions-api/lib/tableau.extensions.1.latest.js"
+        strategy="afterInteractive"
+        onLoad={initTableau}
+        onError={() => setInitError("Failed to load the Tableau Extensions API script from tableau.github.io.")}
+      />
       <div style={{ display: "flex", height: "100vh", background: "#f5f6f8" }}>
         {/* Canvas */}
         <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
@@ -152,7 +196,12 @@ export default function ExtensionPage() {
           }}
         >
           <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
-            {!ready && <div style={{ color: "#999" }}>Connecting to Tableau...</div>}
+            {!ready && !initError && <div style={{ color: "#999" }}>Connecting to Tableau...</div>}
+            {initError && (
+              <div style={{ color: "crimson", fontSize: 12, whiteSpace: "pre-wrap", marginBottom: 10 }}>
+                Tableau init error: {initError}
+              </div>
+            )}
             {messages.map((m, i) => (
               <div key={i} style={{ marginBottom: 10, textAlign: m.role === "user" ? "right" : "left" }}>
                 <span
