@@ -91,10 +91,28 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
         position: "relative"
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative", zIndex: 2 }}>
         <strong style={{ fontSize: 13 }}>{widget.title}</strong>
-        <button onClick={onRemove} style={{ border: "none", background: "none", cursor: "pointer", color: "#999" }}>
-          x
+        <button
+          onClick={onRemove}
+          title="Remove widget"
+          style={{
+            border: "none",
+            background: "#f1f1f1",
+            cursor: "pointer",
+            color: "#666",
+            fontSize: 16,
+            lineHeight: 1,
+            width: 28,
+            height: 28,
+            borderRadius: "50%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0
+          }}
+        >
+          &times;
         </button>
       </div>
 
