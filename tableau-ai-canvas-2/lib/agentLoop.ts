@@ -50,7 +50,12 @@ const tools: Anthropic.Tool[] = [
   {
     name: "emit_widget",
     description:
-      "Emit one finished widget to render on the canvas. Call this once per chart/KPI/table you want to show. Use real data returned from query_data.",
+      "Emit one finished widget to render on the canvas. Call this once per chart/KPI/table you want to show. Use real data returned from query_data. " +
+      "For type 'kpi', data must be exactly one row with exactly one field, and that field's value must be the number itself, e.g. [{ \"Total Leaving Employees\": 157 }] - not a label/value pair. " +
+      "Bar/line charts always show the value printed above each bar/point automatically - you don't need to do anything extra for that. " +
+      "encoding.color (if you set it at all) MUST be the exact name of a field that exists in `data`, used to split bars into categories/series - " +
+      "it is NOT a way to set a literal color like 'green' or 'blue'. If the user asks for a specific solid color, that isn't currently supported: " +
+      "just skip encoding.color and mention the limitation in your closing text reply instead of inventing a fake field name (doing so will make the chart fail to render).",
     input_schema: {
       type: "object",
       properties: {
@@ -67,7 +72,7 @@ const tools: Anthropic.Tool[] = [
           properties: {
             columns: { type: "string" },
             rows: { type: "string" },
-            color: { type: "string" }
+            color: { type: "string", description: "Must be a real field name in `data` for category coloring - never a literal color name." }
           }
         }
       },
