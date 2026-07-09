@@ -111,6 +111,7 @@ export async function runAgentLoop(
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userPrompt }];
   let widgetCounter = 0;
   let finalText = "";
+  let lastError: string | null = null;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await anthropic.messages.create({
@@ -163,6 +164,9 @@ export async function runAgentLoop(
           content: JSON.stringify(result).slice(0, 8000) // keep context lean
         });
       } catch (err: any) {
+        lastError = err.message;
+        // eslint-disable-next-line no-console
+        console.error(`[agentLoop] tool ${block.name} failed:`, err);
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
@@ -175,5 +179,9 @@ export async function runAgentLoop(
     messages.push({ role: "user", content: toolResults });
   }
 
-  return finalText || "Done.";
+  if (finalText) return finalText;
+  if (widgetCounter === 0 && lastError) {
+    return `I couldn't fetch data from Tableau: ${lastError}`;
+  }
+  return "Done.";
 }
