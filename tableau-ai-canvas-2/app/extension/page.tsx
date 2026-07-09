@@ -8,6 +8,7 @@ import "react-resizable/css/styles.css";
 import type { Widget } from "@/lib/agentLoop";
 import WidgetCard from "./WidgetCard";
 import { postSSE } from "./sse";
+import FilterBar, { toQueryFilters, type ActiveFilter } from "./FilterBar";
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -23,9 +24,11 @@ export default function ExtensionPage() {
   const [busy, setBusy] = useState(false);
   const [widgets, setWidgets] = useState<Widget[]>([]);
   const [layout, setLayout] = useState<Layout[]>([]);
+  const [filters, setFilters] = useState<ActiveFilter[]>([]);
   const [initError, setInitError] = useState<string | null>(null);
   const nextY = useRef(0);
   const initStarted = useRef(false);
+  const skipNextRequery = useRef(true); // don't re-query on the initial load-from-settings pass
 
   function initTableau() {
     if (initStarted.current) return; // avoid double-initializing (onLoad + poll can both fire)
@@ -42,6 +45,7 @@ export default function ExtensionPage() {
             const parsed = JSON.parse(saved);
             setWidgets(parsed.widgets || []);
             setLayout(parsed.layout || []);
+            setFilters(parsed.filters || []);
           } catch {
             /* ignore corrupt settings */
           }
@@ -86,11 +90,46 @@ export default function ExtensionPage() {
   useEffect(() => {
     if (!ready || !window.tableau) return;
     const t = setTimeout(() => {
-      window.tableau!.extensions.settings.set(SETTINGS_KEY, JSON.stringify({ widgets, layout }));
+      window.tableau!.extensions.settings.set(SETTINGS_KEY, JSON.stringify({ widgets, layout, filters }));
       window.tableau!.extensions.settings.saveAsync();
     }, 500);
     return () => clearTimeout(t);
-  }, [widgets, layout, ready]);
+  }, [widgets, layout, filters, ready]);
+
+  // 3. When the filter bar changes, re-run every widget's original query with
+  // the new filters and swap its data in place - no Claude call needed, so
+  // this is fast and doesn't cost anything. Widgets that predate this feature
+  // (no sourceQuery) are left untouched.
+  useEffect(() => {
+    if (skipNextRequery.current) {
+      skipNextRequery.current = false;
+      return;
+    }
+    const queryFilters = toQueryFilters(filters);
+    const t = setTimeout(() => {
+      setWidgets((prev) => {
+        prev.forEach((w) => {
+          if (!w.sourceQuery) return;
+          fetch("/api/requery", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fields: w.sourceQuery!.fields, filters: queryFilters })
+          })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`requery failed (${r.status})`))))
+            .then((json) => {
+              setWidgets((cur) => cur.map((cw) => (cw.id === w.id ? { ...cw, data: json.data || [] } : cw)));
+            })
+            .catch((err) => {
+              // eslint-disable-next-line no-console
+              console.error(`[page] failed to refresh widget "${w.title}" for new filters:`, err);
+            });
+        });
+        return prev;
+      });
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters]);
 
   function addWidget(widget: Widget) {
     setWidgets((prev) => [...prev, widget]);
@@ -119,7 +158,7 @@ export default function ExtensionPage() {
     setMessages((m) => [...m, { role: "user", text: question }]);
     setBusy(true);
     try {
-      await postSSE("/api/chat", { message: question }, {
+      await postSSE("/api/chat", { message: question, filters: toQueryFilters(filters) }, {
         onEvent: (event, data) => {
           if (event === "widget") addWidget(data as Widget);
           if (event === "done") setMessages((m) => [...m, { role: "assistant", text: data.text }]);
@@ -137,7 +176,7 @@ export default function ExtensionPage() {
     setBusy(true);
     setMessages((m) => [...m, { role: "user", text: `Build dashboard: ${g}` }]);
     try {
-      await postSSE("/api/build-dashboard", { goal: g }, {
+      await postSSE("/api/build-dashboard", { goal: g, filters: toQueryFilters(filters) }, {
         onEvent: (event, data) => {
           if (event === "widget") addWidget(data as Widget); // auto-added, matches "Build Dashboard" mode
           if (event === "done") setMessages((m) => [...m, { role: "assistant", text: data.text }]);
@@ -152,11 +191,11 @@ export default function ExtensionPage() {
   return (
     <>
       <Script
-         src="/tableau-extensions.min.js"
-         strategy="afterInteractive"
-         onLoad={initTableau}
-         onError={() => setInitError("Failed to load /tableau-extensions.min.js (check the file was actually uploaded to public/).")}
-       />
+        src="/tableau-extensions.min.js"
+        strategy="afterInteractive"
+        onLoad={initTableau}
+        onError={() => setInitError("Failed to load /tableau-extensions.min.js (check the file was actually uploaded to public/).")}
+      />
       <div style={{ display: "flex", height: "100vh", background: "#f5f6f8" }}>
         {/* Canvas */}
         <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
@@ -164,6 +203,7 @@ export default function ExtensionPage() {
             <strong>Canvas</strong>
             <button onClick={tidy}>Tidy</button>
           </div>
+          <FilterBar value={filters} onChange={setFilters} />
           <ResponsiveGridLayout
             className="layout"
             layouts={{ lg: layout }}
