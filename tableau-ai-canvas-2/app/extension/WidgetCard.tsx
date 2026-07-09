@@ -14,17 +14,41 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
     if (!tableau) return;
 
     let revoke: string | null = null;
+    let settled = false;
+
+    const spec = toVizInputSpec(widget, tableau);
+    // eslint-disable-next-line no-console
+    console.log("[WidgetCard] createVizImageAsync spec for", widget.title, spec);
+
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        setError("Timed out waiting for Tableau to render this chart (check that the encoded fields match the queried data).");
+      }
+    }, 10000);
+
     tableau.extensions
-      .createVizImageAsync(toVizInputSpec(widget, tableau))
+      .createVizImageAsync(spec)
       .then((svg) => {
+        if (settled) return; // timed out already, ignore late resolution
+        settled = true;
+        clearTimeout(timeout);
         const blob = new Blob([svg], { type: "image/svg+xml" });
         const url = URL.createObjectURL(blob);
         revoke = url;
         setImgUrl(url);
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        // eslint-disable-next-line no-console
+        console.error("[WidgetCard] createVizImageAsync failed for", widget.title, err);
+        setError(err?.message ? String(err.message) : JSON.stringify(err));
+      });
 
     return () => {
+      clearTimeout(timeout);
       if (revoke) URL.revokeObjectURL(revoke);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
