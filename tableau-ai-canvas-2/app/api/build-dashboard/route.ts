@@ -1,4 +1,6 @@
 import { runAgentLoop, type Widget } from "@/lib/agentLoop";
+import { describeFilters } from "@/lib/filters";
+import type { QueryFilter } from "@/lib/tableauClient";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // dashboards take longer - several sequential queries
@@ -11,14 +13,17 @@ emit_widget with that data - do this widget by widget, calling emit_widget as so
 as each one's data is ready. You have a limited number of turns, so budget
 carefully: after your 3rd or 4th widget, stop planning more and finish with one
 short sentence summarizing the dashboard. Never leave the conversation without a
-final text reply after your widgets.`;
+final text reply after your widgets. If filters are active, every widget you build
+is already scoped to them - no need to build a separate "filtered" version.`;
 
 export async function POST(req: Request) {
-  const { goal } = await req.json();
+  const { goal, filters } = await req.json();
 
   if (!goal || typeof goal !== "string") {
     return new Response("Missing `goal`", { status: 400 });
   }
+  const activeFilters: QueryFilter[] = Array.isArray(filters) ? filters : [];
+  const filterLine = describeFilters(activeFilters);
 
   const encoder = new TextEncoder();
 
@@ -31,9 +36,10 @@ export async function POST(req: Request) {
       try {
         const finalText = await runAgentLoop(
           SYSTEM_PROMPT,
-          `Build a dashboard for: ${goal}`,
+          `Build a dashboard for: ${goal}${filterLine ? `\n\n${filterLine}` : ""}`,
           (widget: Widget) => send("widget", widget),
-          24 // dashboards need more tool turns than a single Q&A
+          24, // dashboards need more tool turns than a single Q&A
+          activeFilters
         );
         send("done", { text: finalText });
       } catch (err: any) {
