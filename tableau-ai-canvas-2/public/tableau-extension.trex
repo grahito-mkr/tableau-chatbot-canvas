@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest manifest-version="0.1" xmlns="http://www.tableau.com/xml/extension_manifest">
+  <dashboard-extension id="com.mekari.ai-canvas" extension-version="1.0.0">
+    <default-locale>en_US</default-locale>
+    <name resource-id="name"/>
+    <description>Ask questions about your data and generate dashboard widgets with AI, right on the canvas.</description>
+    <author name="Mekari Data Team" email="data-team-1@mekari.com" organization="Mekari" website="https://mekari.com" />
+    <min-api-version>1.9</min-api-version>
+    <source-location>
+      <url>https://tableau-chatbot-canvas.vercel.app/extension</url>
+    </source-location>
+    <icon>iVBORw0KGgoAAAANSUhEUgAAAEYAAABGCAYAAABxLuKEAAAAqElEQVR4nO3QQRGAMADAsDEvU4Z8RDABu77hkSjo9Vr38w4O8+uAvzImGBOMCcYEY4IxwZhgTDAmGBOMCcYEY4IxwZhgTDAmGBOMCcYEY4IxwZhgTDAmGBOMCcYEY4IxwZhgTDAmGBOMCcYEY4IxwZhgTDAmGBOMCcYEY4IxwZhgTDAmGBOMCcYEY4IxwZhgTDAmGBOMCcaEDTc9Av6ih1fOAAAAAElFTkSuQmCC</icon>
+    <permissions>
+      <permission>full data</permission>
+    </permissions>
+  </dashboard-extension>
+  <resources>
+    <resource id="name">
+      <text locale="en_US">AI Canvas Assistant</text>
+    </resource>
+  </resources>
+</manifest>
