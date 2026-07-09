@@ -152,10 +152,10 @@ export default function ExtensionPage() {
   return (
     <>
       <Script
-        src="https://tableau.github.io/extensions-api/lib/tableau.extensions.1.latest.js"
+        src="/api/tableau-extensions-lib"
         strategy="afterInteractive"
         onLoad={initTableau}
-        onError={() => setInitError("Failed to load the Tableau Extensions API script from tableau.github.io.")}
+        onError={() => setInitError("Failed to load the Tableau Extensions API script (proxied via /api/tableau-extensions-lib).")}
       />
       <div style={{ display: "flex", height: "100vh", background: "#f5f6f8" }}>
         {/* Canvas */}
