@@ -56,6 +56,39 @@ just can't *be* it.
 - `Ask` mode (`/api/chat`) usually finishes in a few seconds.
 - `Build Dashboard` mode runs several sequential Tableau queries and can take 30–120s+ depending on how many widgets Claude plans. `vercel.json` sets `maxDuration: 300` for that route, which requires a **Pro plan with Fluid Compute** (Hobby caps out lower). If you're on Hobby, either lower `maxTurns` in `lib/agentLoop.ts` or upgrade the plan.
 
+## Filters (Date, Branch, Employee, etc.)
+
+A filter bar lives at the top of the Canvas panel (`app/extension/FilterBar.tsx`).
+Click **+ Add filter**, pick any field on your datasource, and either set a
+date range (for date fields) or pick specific values (for everything else -
+e.g. Branch, Employee Name). Filters:
+
+- Apply to every future "Ask" and "Build Dashboard" call automatically -
+  they're merged into every `query_data` call server-side in
+  `lib/agentLoop.ts`, so it's guaranteed correct even if Claude doesn't
+  mention them.
+- Re-run every widget already on the canvas the moment you change them, via
+  `POST /api/requery` - a direct Tableau call with no Claude involved, so it's
+  fast and free. This only works for widgets built after this feature was
+  added (they carry a `sourceQuery` recording which fields produced their
+  data); older saved widgets won't auto-refresh.
+- Persist in `tableau.extensions.settings` alongside the canvas layout, so
+  they survive a reload.
+
+New supporting routes, all direct-to-Tableau (no LLM call, so they're cheap
+and fast):
+
+- `GET /api/fields` - lists filterable fields for the "+ Add filter" dropdown.
+- `GET /api/field-values?field=X` - up to 200 distinct values for a field, to
+  populate its checklist.
+- `POST /api/requery` - re-runs one widget's stored query with new filters.
+
+If you'd rather sync with native Tableau filter objects already on the
+dashboard instead of (or in addition to) this in-extension filter bar, listen
+for filter changes via the Extensions API
+(`tableau.extensions.dashboardContent.dashboard.addEventListener(tableau.TableauEventType.FilterChanged, ...)`)
+and feed those into the same `baseFilters` mechanism in `agentLoop.ts`.
+
 ## Wiring it into Tableau
 
 1. Edit `public/tableau-extension.trex` and replace the placeholder URL with `https://<your-vercel-domain>/extension`.
@@ -79,11 +112,16 @@ it in Tableau Desktop to iterate locally before deploying.
 ## Project structure
 
 ```
-lib/tableauClient.ts       Tableau REST auth + VDS query helpers
+lib/tableauClient.ts       Tableau REST auth + VDS query helpers (SET + range filters)
 lib/agentLoop.ts           Claude tool-use loop (list_fields / query_data / emit_widget)
+lib/filters.ts             Turns active filters into a short text line for the model's prompt
 app/api/chat/route.ts      Ask-mode SSE endpoint
 app/api/build-dashboard/route.ts   Build-dashboard SSE endpoint (plans + streams widgets)
+app/api/fields/route.ts    Lists filterable fields (for the filter bar's "+ Add filter")
+app/api/field-values/route.ts      Distinct values for one field (for the filter bar's checklist)
+app/api/requery/route.ts   Re-runs one widget's query with new filters, no Claude call
 app/extension/page.tsx     The extension UI: chat panel + drag/resize canvas
+app/extension/FilterBar.tsx        The filter bar UI (Date/Branch/Employee/etc.)
 app/extension/WidgetCard.tsx       Renders one widget (KPI/table as DOM, bar/line via Tableau's createVizImageAsync)
 app/extension/vizSpec.ts   Builds the Tableau Viz inputSpec for chart widgets
 app/extension/sse.ts       Client-side SSE-over-POST reader
