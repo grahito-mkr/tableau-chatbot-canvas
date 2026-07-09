@@ -196,6 +196,17 @@ export default function ExtensionPage() {
           }}
         >
           <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <strong style={{ fontSize: 13 }}>Chat</strong>
+              {messages.length > 0 && (
+                <button
+                  onClick={() => setMessages([])}
+                  style={{ fontSize: 11, color: "#666", background: "none", border: "1px solid #ddd", borderRadius: 4, padding: "2px 8px", cursor: "pointer" }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
             {!ready && !initError && <div style={{ color: "#999" }}>Connecting to Tableau...</div>}
             {initError && (
               <div style={{ color: "crimson", fontSize: 12, whiteSpace: "pre-wrap", marginBottom: 10 }}>
