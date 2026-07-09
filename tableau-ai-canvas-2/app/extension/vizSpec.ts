@@ -15,6 +15,14 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
   const col = columnsField || keys[0];
   const row = rowsField || keys[1];
 
+  // `color` in the Tableau Viz spec must reference a real field in the data
+  // (it's a data-driven encoding, not a way to set a literal color like
+  // "green"). If the model hallucinated a color name instead of a field that
+  // actually exists in the row data, drop it rather than sending an invalid
+  // field reference that makes createVizImageAsync fail outright.
+  const requestedColor = widget.encoding?.color;
+  const colorField = requestedColor && keys.includes(requestedColor) ? requestedColor : undefined;
+
   return {
     description: widget.title,
     data: { values: widget.data },
@@ -22,9 +30,9 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
     encoding: {
       columns: { field: col, type: tableau.VizImageEncodingType.Discrete },
       rows: { field: row, type: tableau.VizImageEncodingType.Continuous },
-      ...(widget.encoding?.color
-        ? { color: { field: widget.encoding.color, type: tableau.VizImageEncodingType.Discrete } }
-        : {})
+      // Print the value on top of each bar/point, matching a normal Tableau chart.
+      text: { field: row, type: tableau.VizImageEncodingType.Continuous },
+      ...(colorField ? { color: { field: colorField, type: tableau.VizImageEncodingType.Discrete } } : {})
     }
   };
 }
