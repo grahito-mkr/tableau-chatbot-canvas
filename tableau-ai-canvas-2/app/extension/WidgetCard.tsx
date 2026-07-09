@@ -7,16 +7,40 @@ import { toVizInputSpec } from "./vizSpec";
 export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRemove: () => void }) {
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState<string | null>(null);
 
   useEffect(() => {
     if (widget.type !== "bar" && widget.type !== "line") return;
+
     const tableau = window.tableau;
-    if (!tableau) return;
+    if (!tableau) {
+      setError("window.tableau is not available in this context (extension may not be fully initialized).");
+      return;
+    }
+    if (!tableau.MarkType || !tableau.VizImageEncodingType) {
+      setError(
+        `tableau.MarkType or tableau.VizImageEncodingType is missing on the loaded Extensions API script (MarkType=${String(
+          tableau.MarkType
+        )}, VizImageEncodingType=${String(tableau.VizImageEncodingType)}).`
+      );
+      return;
+    }
 
     let revoke: string | null = null;
     let settled = false;
+    let spec: unknown;
 
-    const spec = toVizInputSpec(widget, tableau);
+    // Build the spec in its own try/catch: if this throws synchronously (e.g. a
+    // missing enum property), the effect used to die silently and the card
+    // would show "Rendering..." forever with no visible error.
+    try {
+      spec = toVizInputSpec(widget, tableau);
+    } catch (err: any) {
+      setError(`Failed to build chart spec: ${err?.message || String(err)}`);
+      return;
+    }
+
+    setDebugInfo(JSON.stringify(spec).slice(0, 500));
     // eslint-disable-next-line no-console
     console.log("[WidgetCard] createVizImageAsync spec for", widget.title, spec);
 
@@ -78,11 +102,18 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
       {widget.type === "table" && <TableBody widget={widget} />}
       {(widget.type === "bar" || widget.type === "line") && (
         <>
-          {error && <div style={{ color: "crimson", fontSize: 12 }}>{error}</div>}
+          {error && (
+            <div style={{ color: "crimson", fontSize: 12, whiteSpace: "pre-wrap" }}>{error}</div>
+          )}
           {imgUrl ? (
             <img src={imgUrl} alt={widget.title} style={{ width: "100%", height: "auto" }} />
           ) : (
             !error && <div style={{ fontSize: 12, color: "#999" }}>Rendering...</div>
+          )}
+          {!imgUrl && debugInfo && (
+            <div style={{ fontSize: 10, color: "#bbb", marginTop: 6, wordBreak: "break-all" }}>
+              spec: {debugInfo}
+            </div>
           )}
         </>
       )}
@@ -91,9 +122,19 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
 }
 
 function KpiBody({ widget }: { widget: Widget }) {
-  const row = widget.data[0] || {};
+  const row: Record<string, unknown> = widget.data[0] || {};
   const keys = Object.keys(row);
-  const value = keys.length ? row[keys[0]] : "-";
+
+  // Prefer a key whose value is actually numeric (or a numeric-looking string)
+  // over just taking the first key, since label fields (e.g. "Metric") often
+  // come first in the row the model sends.
+  const numericKey = keys.find((k) => {
+    const v = row[k];
+    return typeof v === "number" || (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)));
+  });
+
+  const value = numericKey ? row[numericKey] : keys.length ? row[keys[0]] : "-";
+
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ fontSize: 28, fontWeight: 700 }}>{String(value)}</div>
