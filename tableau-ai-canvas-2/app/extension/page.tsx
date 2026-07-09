@@ -152,11 +152,11 @@ export default function ExtensionPage() {
   return (
     <>
       <Script
-        src="/api/tableau-extensions-lib"
-        strategy="afterInteractive"
-        onLoad={initTableau}
-        onError={() => setInitError("Failed to load the Tableau Extensions API script (proxied via /api/tableau-extensions-lib).")}
-      />
+         src="/tableau-extensions.min.js"
+         strategy="afterInteractive"
+         onLoad={initTableau}
+         onError={() => setInitError("Failed to load /tableau-extensions.min.js (check the file was actually uploaded to public/).")}
+       />
       <div style={{ display: "flex", height: "100vh", background: "#f5f6f8" }}>
         {/* Canvas */}
         <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
