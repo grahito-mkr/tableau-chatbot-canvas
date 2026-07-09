@@ -6,8 +6,10 @@ import { Responsive, WidthProvider, type Layout } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import type { Widget } from "@/lib/agentLoop";
+import type { QueryFilter } from "@/lib/tableauClient";
 import WidgetCard from "./WidgetCard";
 import { postSSE } from "./sse";
+import { readDashboardFilters, watchDashboardFilters } from "./nativeFilters";
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -23,9 +25,14 @@ export default function ExtensionPage() {
   const [busy, setBusy] = useState(false);
   const [widgets, setWidgets] = useState<Widget[]>([]);
   const [layout, setLayout] = useState<Layout[]>([]);
+  // Filters now come from Tableau's own native filter cards on the
+  // dashboard - see app/extension/nativeFilters.ts. We don't render any
+  // filter UI ourselves anymore.
+  const [filters, setFilters] = useState<QueryFilter[]>([]);
   const [initError, setInitError] = useState<string | null>(null);
   const nextY = useRef(0);
   const initStarted = useRef(false);
+  const unwatchFilters = useRef<(() => void) | null>(null);
 
   function initTableau() {
     if (initStarted.current) return; // avoid double-initializing (onLoad + poll can both fire)
@@ -46,12 +53,24 @@ export default function ExtensionPage() {
             /* ignore corrupt settings */
           }
         }
+
+        // Read whatever native filters are already applied, then keep
+        // listening for changes for as long as the extension is open.
+        readDashboardFilters(window.tableau!).then(setFilters);
+        unwatchFilters.current = watchDashboardFilters(window.tableau!, setFilters);
       })
       .catch((err: any) => {
         initStarted.current = false;
         setInitError(err?.message || String(err));
       });
   }
+
+  // Stop listening for filter changes when the page unmounts.
+  useEffect(() => {
+    return () => {
+      if (unwatchFilters.current) unwatchFilters.current();
+    };
+  }, []);
 
   // 1. Initialize the Tableau Extensions API + restore any saved canvas.
   //
@@ -82,7 +101,9 @@ export default function ExtensionPage() {
     };
   }, []);
 
-  // 2. Persist canvas state whenever it changes.
+  // 2. Persist canvas state whenever it changes. Filters aren't saved here -
+  // they live in Tableau's own dashboard filters, which Tableau already
+  // persists when the workbook is saved.
   useEffect(() => {
     if (!ready || !window.tableau) return;
     const t = setTimeout(() => {
@@ -91,6 +112,36 @@ export default function ExtensionPage() {
     }, 500);
     return () => clearTimeout(t);
   }, [widgets, layout, ready]);
+
+  // 3. Whenever the dashboard's native filters change, re-run every widget's
+  // original query with the new filters and swap its data in place - no
+  // Claude call needed, so this is fast and doesn't cost anything. Widgets
+  // that predate this feature (no sourceQuery) are left untouched.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setWidgets((prev) => {
+        prev.forEach((w) => {
+          if (!w.sourceQuery) return;
+          fetch("/api/requery", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fields: w.sourceQuery!.fields, filters })
+          })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`requery failed (${r.status})`))))
+            .then((json) => {
+              setWidgets((cur) => cur.map((cw) => (cw.id === w.id ? { ...cw, data: json.data || [] } : cw)));
+            })
+            .catch((err) => {
+              // eslint-disable-next-line no-console
+              console.error(`[page] failed to refresh widget "${w.title}" for new filters:`, err);
+            });
+        });
+        return prev;
+      });
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters]);
 
   function addWidget(widget: Widget) {
     setWidgets((prev) => [...prev, widget]);
@@ -119,7 +170,7 @@ export default function ExtensionPage() {
     setMessages((m) => [...m, { role: "user", text: question }]);
     setBusy(true);
     try {
-      await postSSE("/api/chat", { message: question }, {
+      await postSSE("/api/chat", { message: question, filters }, {
         onEvent: (event, data) => {
           if (event === "widget") addWidget(data as Widget);
           if (event === "done") setMessages((m) => [...m, { role: "assistant", text: data.text }]);
@@ -134,10 +185,11 @@ export default function ExtensionPage() {
   async function buildDashboard() {
     if (!goal.trim() || busy) return;
     const g = goal.trim();
+    setGoal("");
     setBusy(true);
     setMessages((m) => [...m, { role: "user", text: `Build dashboard: ${g}` }]);
     try {
-      await postSSE("/api/build-dashboard", { goal: g }, {
+      await postSSE("/api/build-dashboard", { goal: g, filters }, {
         onEvent: (event, data) => {
           if (event === "widget") addWidget(data as Widget); // auto-added, matches "Build Dashboard" mode
           if (event === "done") setMessages((m) => [...m, { role: "assistant", text: data.text }]);
@@ -152,11 +204,11 @@ export default function ExtensionPage() {
   return (
     <>
       <Script
-         src="/tableau-extensions.min.js"
-         strategy="afterInteractive"
-         onLoad={initTableau}
-         onError={() => setInitError("Failed to load /tableau-extensions.min.js (check the file was actually uploaded to public/).")}
-       />
+        src="/tableau-extensions.min.js"
+        strategy="afterInteractive"
+        onLoad={initTableau}
+        onError={() => setInitError("Failed to load /tableau-extensions.min.js (check the file was actually uploaded to public/).")}
+      />
       <div style={{ display: "flex", height: "100vh", background: "#f5f6f8" }}>
         {/* Canvas */}
         <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
@@ -164,6 +216,11 @@ export default function ExtensionPage() {
             <strong>Canvas</strong>
             <button onClick={tidy}>Tidy</button>
           </div>
+          {filters.length > 0 && (
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>
+              Using dashboard filters: {filters.map((f) => f.field).join(", ")}
+            </div>
+          )}
           <ResponsiveGridLayout
             className="layout"
             layouts={{ lg: layout }}
