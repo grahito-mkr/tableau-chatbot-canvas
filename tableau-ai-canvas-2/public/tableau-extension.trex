@@ -8,7 +8,7 @@
 
     <!-- REPLACE with your deployed Vercel URL, e.g. https://tableau-ai-canvas.vercel.app/extension -->
     <source-location>
-      <url>https://REPLACE-WITH-YOUR-VERCEL-URL.vercel.app/extension</url>
+      <url>https://tableau-chatbot-canvas.vercel.app</url>
     </source-location>
 
     <!-- 1x1 transparent PNG placeholder - swap in a real 96x96 icon before publishing -->
