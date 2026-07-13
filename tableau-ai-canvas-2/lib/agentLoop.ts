@@ -53,14 +53,28 @@ const tools: Anthropic.Tool[] = [
     name: "emit_widget",
     description:
       "Emit one finished widget to render on the canvas. Call this once per chart/KPI/table you want to show. Use real data returned from query_data. " +
-      "For type 'kpi', data must be exactly one row with exactly one field, and that field's value must be the number itself, e.g. [{ \"Total Leaving Employees\": 157 }] - not a label/value pair. " +
-      "Bar/line charts always show the value printed above each bar/point automatically - you don't need to do anything extra for that. " +
       "\n\n" +
-      "ORIENTATION for type 'bar':\n" +
-      "- Use orientation='vertical' (default) for a 'column chart' or any chart where the user says the CATEGORY (e.g. Department, Month) is on the X-axis and the MEASURE (e.g. count, sum) is on the Y-axis. Bars grow upward.\n" +
-      "- Use orientation='horizontal' for a 'horizontal bar chart' or any chart where the user says the MEASURE is on the X-axis and the CATEGORY is on the Y-axis. Bars grow rightward.\n" +
-      "- When the user says 'x axis = <measure name>' AND 'y axis = <category name>' (e.g. 'x axis total leaving employees, y axis department'), that is a HORIZONTAL bar chart - measure on X, category on Y - so use orientation='horizontal'. This is the most common way users describe horizontal bars.\n" +
-      "- Common terminology: 'column chart' = vertical bars; 'bar chart' can mean either (default to vertical unless the user specifies horizontal, or asks for the measure on the X-axis).\n" +
+      "CHART TYPES - pick the one that matches what the user asked for:\n" +
+      "- 'kpi': one big number. `data` must be exactly [{ 'FieldName': 157 }] - one row, one field, value IS the number.\n" +
+      "- 'bar': vertical or horizontal bar chart. `data` = [{ Category, Measure }, ...]. See ORIENTATION below.\n" +
+      "- 'line': time-series or ordered-category line chart. `data` = [{ Category, Measure }, ...]. Order the rows chronologically.\n" +
+      "- 'area': line chart with the area under it filled. Use when the user says 'area chart' or wants to emphasize cumulative volume.\n" +
+      "- 'pie': circular chart showing parts of a whole. `data` = [{ Category, Measure }, ...]. Use for categorical breakdowns of a single measure (e.g. sales by region). Best for <=7 categories.\n" +
+      "- 'donut': pie chart with a hole in the middle. Same data shape as pie. Use when the user says 'donut chart' specifically.\n" +
+      "- 'scatter': two numeric measures plotted against each other. `data` = [{ XField, YField }, ...] with both fields numeric. Optionally include a third categorical field for point color grouping (name it `encoding.color`), and/or a fourth text field for point labels/tooltips.\n" +
+      "- 'stacked-bar': multi-series bar where each bar is split into stacked color segments by a second dimension. `data` = [{ Category, Series, Measure }, ...] - THREE fields per row. Rows for the same Category+Series are auto-summed.\n" +
+      "- 'grouped-bar': same data shape as stacked-bar, but each series is a side-by-side bar within the category rather than stacked. Use when the user asks to 'compare' series values.\n" +
+      "- 'heatmap': a grid of colored cells where color intensity = measure value. `data` = [{ XField, YField, Measure }, ...] - THREE fields per row. Use for showing patterns across two dimensions (e.g. day-of-week vs. hour).\n" +
+      "- 'table': plain data grid. `data` = array of rows.\n" +
+      "\n" +
+      "ORIENTATION (for type='bar' only):\n" +
+      "- Use orientation='vertical' (default) for a 'column chart' or when the CATEGORY is on the X-axis and the MEASURE is on the Y-axis. Bars grow upward.\n" +
+      "- Use orientation='horizontal' for a 'horizontal bar chart' or when the MEASURE is on the X-axis and the CATEGORY is on the Y-axis. Bars grow rightward. Best when there are many categories or long category labels.\n" +
+      "- When the user says 'x axis = <measure>' AND 'y axis = <category>', that is a HORIZONTAL bar - use orientation='horizontal'.\n" +
+      "\n" +
+      "DATA SHAPE for multi-dimensional charts:\n" +
+      "- For stacked-bar / grouped-bar / heatmap, query_data must return THREE fields per row: two dimensions and one aggregated measure. Don't pre-pivot the data - keep it flat, one row per (dim1, dim2) combination.\n" +
+      "- For pie/donut, always aggregate first so each category appears once. If there are >10 slices, consider grouping the smallest into 'Other' or suggesting a bar chart instead.\n" +
       "\n" +
       "encoding.color (if you set it at all) MUST be the exact name of a field that exists in `data`, used to split bars into categories/series - " +
       "it is NOT a way to set a literal color like 'green' or 'blue'. If the user asks for a specific solid color, that isn't currently supported: " +
@@ -69,24 +83,39 @@ const tools: Anthropic.Tool[] = [
       type: "object",
       properties: {
         title: { type: "string" },
-        type: { type: "string", enum: ["kpi", "bar", "line", "table"] },
+        type: {
+          type: "string",
+          enum: [
+            "kpi",
+            "bar",
+            "line",
+            "area",
+            "pie",
+            "donut",
+            "scatter",
+            "stacked-bar",
+            "grouped-bar",
+            "heatmap",
+            "table"
+          ]
+        },
         orientation: {
           type: "string",
           enum: ["vertical", "horizontal"],
-          description: "For type='bar' only. 'vertical' (default) = categories on X-axis, measure on Y-axis (a.k.a. column chart). 'horizontal' = measure on X-axis, categories on Y-axis (a.k.a. horizontal bar chart). See the ORIENTATION section of this tool's description for how everyday phrases map to this."
+          description: "For type='bar' only. 'vertical' (default) = categories on X-axis, measure on Y-axis (a.k.a. column chart). 'horizontal' = measure on X-axis, categories on Y-axis (a.k.a. horizontal bar chart). See ORIENTATION section for how everyday phrases map to this."
         },
         data: {
           type: "array",
-          description: "Array of row objects, e.g. [{ Category: 'A', Sales: 123 }, ...]",
+          description: "Array of row objects, e.g. [{ Category: 'A', Sales: 123 }, ...]. See CHART TYPES / DATA SHAPE in this tool's description for the exact shape each type expects.",
           items: { type: "object" }
         },
         encoding: {
           type: "object",
-          description: "For bar/line charts: which fields map to columns/rows/color. Every value here must be an exact key present in `data` rows.",
+          description: "For chart widgets: which fields map to axes/series. Every value here must be an exact key present in `data` rows.",
           properties: {
-            columns: { type: "string" },
-            rows: { type: "string" },
-            color: { type: "string", description: "Must be a real field name in `data` for category coloring - never a literal color name." }
+            columns: { type: "string", description: "X-axis field (or for scatter, the X-axis numeric field)." },
+            rows: { type: "string", description: "Y-axis field (or for scatter, the Y-axis numeric field)." },
+            color: { type: "string", description: "Series-splitting field for stacked/grouped bars, or grouping field for scatter. Must be a real field name in `data` - never a literal color name." }
           }
         }
       },
@@ -98,7 +127,18 @@ const tools: Anthropic.Tool[] = [
 export type Widget = {
   id: string;
   title: string;
-  type: "kpi" | "bar" | "line" | "table";
+  type:
+    | "kpi"
+    | "bar"
+    | "line"
+    | "area"
+    | "pie"
+    | "donut"
+    | "scatter"
+    | "stacked-bar"
+    | "grouped-bar"
+    | "heatmap"
+    | "table";
   // For type='bar' only. Undefined defaults to 'vertical' (column chart).
   orientation?: "vertical" | "horizontal";
   data: Record<string, unknown>[];
