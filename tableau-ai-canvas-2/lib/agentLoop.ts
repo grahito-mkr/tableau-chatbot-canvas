@@ -89,10 +89,12 @@ export type Widget = {
   type: "kpi" | "bar" | "line" | "table";
   data: Record<string, unknown>[];
   encoding?: { columns?: string; rows?: string; color?: string };
-  // The exact fields this widget's data was queried with. Captured from the
-  // query_data call that preceded this widget's emit_widget call, so the
-  // frontend's global filter bar can re-run the same query with new filters
-  // and refresh this widget in place, without going back through the LLM.
+  // The fields this widget's data was queried with - matched by
+  // field-caption overlap against the widget's own data keys (see
+  // runAgentLoop), not just "whichever query_data call happened most
+  // recently". Used both by vizSpec.ts (to know which field is the measure
+  // vs. the dimension) and by the frontend's filter bar to re-run the same
+  // query with new filters and refresh this widget in place.
   sourceQuery?: { fields: FieldSpec[] };
 };
 
@@ -130,9 +132,18 @@ export async function runAgentLoop(
   let widgetCounter = 0;
   let finalText = "";
   let lastError: string | null = null;
-  // The fields from the most recent query_data call, so we can tag the next
-  // emit_widget with the query that produced its data (see Widget.sourceQuery).
-  let lastQueryFields: FieldSpec[] | null = null;
+  // Every query_data call made so far in this run, in order. When tagging an
+  // emit_widget call with its sourceQuery, we match by field-caption overlap
+  // against a widget's actual data keys rather than just grabbing "the most
+  // recent query_data call" - Build Dashboard mode routinely issues several
+  // query_data calls (one per planned widget) before their corresponding
+  // emit_widget calls arrive, all within the same turn, so "most recent" is
+  // frequently the WRONG query for an earlier widget. Tagging a widget with
+  // the wrong query's fields silently breaks vizSpec.ts's measure/dimension
+  // detection (a field gets treated as neither measure nor dimension because
+  // its name isn't in the mistakenly-attached field list), which is exactly
+  // what turned the monthly-trend and department charts into crosstabs.
+  const allQueries: FieldSpec[][] = [];
 
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await anthropic.messages.create({
@@ -162,13 +173,36 @@ export async function runAgentLoop(
       if (block.name === "emit_widget") {
         widgetCounter += 1;
         const input = block.input as any;
+        const dataKeys = new Set(
+          Array.isArray(input.data) && input.data.length > 0 ? Object.keys(input.data[0]) : []
+        );
+
+        // Find the query_data call whose requested fields best match this
+        // widget's actual data keys (by fieldCaption). This is what lets us
+        // correctly attribute sourceQuery even when several query_data calls
+        // happened earlier in the same turn, in a different order than
+        // their corresponding emit_widget calls.
+        let bestMatch: FieldSpec[] | null = null;
+        let bestScore = 0;
+        for (const fields of allQueries) {
+          const score = fields.reduce((acc, f) => acc + (dataKeys.has(f.fieldCaption) ? 1 : 0), 0);
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = fields;
+          }
+        }
+        // Fall back to the most recent query if nothing matched at all
+        // (e.g. the model renamed a field between query_data and
+        // emit_widget) - better to attach something than nothing.
+        const matchedQuery = bestMatch ?? allQueries[allQueries.length - 1] ?? null;
+
         onWidget({
           id: `widget-${Date.now()}-${widgetCounter}`,
           title: input.title,
           type: input.type,
           data: input.data,
           encoding: input.encoding,
-          ...(lastQueryFields ? { sourceQuery: { fields: lastQueryFields } } : {})
+          ...(matchedQuery ? { sourceQuery: { fields: matchedQuery } } : {})
         });
         toolResults.push({
           type: "tool_result",
@@ -179,7 +213,8 @@ export async function runAgentLoop(
       }
 
       if (block.name === "query_data") {
-        lastQueryFields = (block.input as any).fields || null;
+        const fields = (block.input as any).fields || null;
+        if (fields) allQueries.push(fields);
       }
 
       try {
