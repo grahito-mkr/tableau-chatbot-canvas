@@ -15,23 +15,42 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
   const col = columnsField || keys[0];
   const row = rowsField || keys[1];
 
-  // Whether a field's values are actually numeric - used to decide Discrete
-  // vs Continuous per field, instead of assuming columns is always the
-  // category and rows is always the measure. That assumption broke as soon
-  // as someone asked for a horizontal bar chart (measure on columns,
-  // category on rows): Tableau rejected it with "Field X has unsupported
-  // data" because a text field was being sent as Continuous.
+  // sourceQuery.fields (captured from the query_data call that produced this
+  // widget's data - see agentLoop.ts) tells us, per field, whether it was
+  // queried as a measure (has an aggregation `function`: SUM/AVG/COUNT/etc.)
+  // or a plain dimension (no function - e.g. "Branch Id"). This is the
+  // authoritative signal for Discrete vs Continuous, because VDS commonly
+  // returns every value - measures included - as a JSON string, and
+  // ID-like dimensions (Branch Id, Employee Id) are ALSO numeric-looking
+  // strings (e.g. "61331"). Guessing from the shape of the value alone
+  // can't tell these two cases apart; guessing wrong for an ID field is
+  // exactly what caused "Field Branch Id has unsupported data" (a string
+  // sent where Tableau's viz spec requires a true Continuous number).
+  const measureFieldNames = new Set(
+    (widget.sourceQuery?.fields || []).filter((f) => !!f.function).map((f) => f.fieldCaption)
+  );
+  const hasSourceQueryInfo = (widget.sourceQuery?.fields?.length ?? 0) > 0;
+
+  // Fallback heuristic, used only when we have no sourceQuery metadata to
+  // rely on (e.g. older widgets, or a future caller that doesn't set it).
+  // Trusts the real JS type only - a numeric-looking string is NOT treated
+  // as numeric here, since that's what misclassified Branch Id before.
+  const valueShapeIsNumeric = (field: string | undefined) => {
+    if (!field) return false;
+    let sawValue = false;
+    const allNumbers = widget.data.every((r) => {
+      const v = (r as Record<string, unknown>)[field];
+      if (v === null || v === undefined) return true;
+      sawValue = true;
+      return typeof v === "number";
+    });
+    return sawValue && allNumbers;
+  };
+
   const isNumericField = (field: string | undefined) => {
     if (!field) return false;
-    return widget.data.every((r) => {
-      const v = (r as Record<string, unknown>)[field];
-      return (
-        v === null ||
-        v === undefined ||
-        typeof v === "number" ||
-        (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)))
-      );
-    });
+    if (hasSourceQueryInfo) return measureFieldNames.has(field);
+    return valueShapeIsNumeric(field);
   };
 
   const { Discrete, Continuous } = tableau.VizImageEncodingType;
@@ -44,6 +63,31 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
   const measureField = isNumericField(row) ? row : isNumericField(col) ? col : row;
   const measureType = isNumericField(measureField) ? Continuous : Discrete;
 
+  // `data.values` must actually match the types we just declared - declaring
+  // a field Continuous but leaving its values as strings (e.g. VDS returning
+  // "94" instead of 94) is the same class of bug as the Branch Id issue, just
+  // in the opposite direction. Coerce each row so Continuous fields hold real
+  // numbers and Discrete fields hold strings, regardless of what shape the
+  // upstream data happened to arrive in.
+  const numericCols = new Set([col, row, measureField].filter((f) => f && isNumericField(f)));
+  const coercedValues = widget.data.map((r) => {
+    const rec = r as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...rec };
+    for (const key of Object.keys(rec)) {
+      const v = rec[key];
+      if (v === null || v === undefined) continue;
+      if (numericCols.has(key)) {
+        if (typeof v !== "number") {
+          const n = Number(v);
+          out[key] = Number.isNaN(n) ? v : n;
+        }
+      } else if (typeof v !== "string") {
+        out[key] = String(v);
+      }
+    }
+    return out;
+  });
+
   // `color` in the Tableau Viz spec must reference a real field in the data
   // (it's a data-driven encoding, not a way to set a literal color like
   // "green"). If the model hallucinated a color name instead of a field that
@@ -54,7 +98,7 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
 
   return {
     description: widget.title,
-    data: { values: widget.data },
+    data: { values: coercedValues },
     mark: widget.type === "line" ? tableau.MarkType.Line : tableau.MarkType.Bar,
     encoding: {
       columns: { field: col, type: colType },
