@@ -55,6 +55,13 @@ const tools: Anthropic.Tool[] = [
       "Emit one finished widget to render on the canvas. Call this once per chart/KPI/table you want to show. Use real data returned from query_data. " +
       "For type 'kpi', data must be exactly one row with exactly one field, and that field's value must be the number itself, e.g. [{ \"Total Leaving Employees\": 157 }] - not a label/value pair. " +
       "Bar/line charts always show the value printed above each bar/point automatically - you don't need to do anything extra for that. " +
+      "\n\n" +
+      "ORIENTATION for type 'bar':\n" +
+      "- Use orientation='vertical' (default) for a 'column chart' or any chart where the user says the CATEGORY (e.g. Department, Month) is on the X-axis and the MEASURE (e.g. count, sum) is on the Y-axis. Bars grow upward.\n" +
+      "- Use orientation='horizontal' for a 'horizontal bar chart' or any chart where the user says the MEASURE is on the X-axis and the CATEGORY is on the Y-axis. Bars grow rightward.\n" +
+      "- When the user says 'x axis = <measure name>' AND 'y axis = <category name>' (e.g. 'x axis total leaving employees, y axis department'), that is a HORIZONTAL bar chart - measure on X, category on Y - so use orientation='horizontal'. This is the most common way users describe horizontal bars.\n" +
+      "- Common terminology: 'column chart' = vertical bars; 'bar chart' can mean either (default to vertical unless the user specifies horizontal, or asks for the measure on the X-axis).\n" +
+      "\n" +
       "encoding.color (if you set it at all) MUST be the exact name of a field that exists in `data`, used to split bars into categories/series - " +
       "it is NOT a way to set a literal color like 'green' or 'blue'. If the user asks for a specific solid color, that isn't currently supported: " +
       "just skip encoding.color and mention the limitation in your closing text reply instead of inventing a fake field name (doing so will make the chart fail to render).",
@@ -63,6 +70,11 @@ const tools: Anthropic.Tool[] = [
       properties: {
         title: { type: "string" },
         type: { type: "string", enum: ["kpi", "bar", "line", "table"] },
+        orientation: {
+          type: "string",
+          enum: ["vertical", "horizontal"],
+          description: "For type='bar' only. 'vertical' (default) = categories on X-axis, measure on Y-axis (a.k.a. column chart). 'horizontal' = measure on X-axis, categories on Y-axis (a.k.a. horizontal bar chart). See the ORIENTATION section of this tool's description for how everyday phrases map to this."
+        },
         data: {
           type: "array",
           description: "Array of row objects, e.g. [{ Category: 'A', Sales: 123 }, ...]",
@@ -87,6 +99,8 @@ export type Widget = {
   id: string;
   title: string;
   type: "kpi" | "bar" | "line" | "table";
+  // For type='bar' only. Undefined defaults to 'vertical' (column chart).
+  orientation?: "vertical" | "horizontal";
   data: Record<string, unknown>[];
   encoding?: { columns?: string; rows?: string; color?: string };
   // The fields this widget's data was queried with - matched by
@@ -200,6 +214,9 @@ export async function runAgentLoop(
           id: `widget-${Date.now()}-${widgetCounter}`,
           title: input.title,
           type: input.type,
+          ...(input.orientation === "horizontal" || input.orientation === "vertical"
+            ? { orientation: input.orientation }
+            : {}),
           data: input.data,
           encoding: input.encoding,
           ...(matchedQuery ? { sourceQuery: { fields: matchedQuery } } : {})
