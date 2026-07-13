@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Widget } from "@/lib/agentLoop";
 import { toVizInputSpec } from "./vizSpec";
 
@@ -8,9 +8,43 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<string | null>(null);
+  const chartAreaRef = useRef<HTMLDivElement | null>(null);
+  // Actual rendered pixel size of the chart area, kept in sync via
+  // ResizeObserver so dragging the react-grid-layout resize handle
+  // re-renders the Tableau image at the new size instead of leaving it
+  // stuck at whatever size it first rendered at.
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const el = chartAreaRef.current;
+    if (!el || (widget.type !== "bar" && widget.type !== "line")) return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      // Ignore transient zero-size measurements (e.g. during initial mount
+      // or a collapsed/hidden card) - re-requesting an image at 0x0 would
+      // just fail or produce something unusable.
+      if (width < 20 || height < 20) return;
+      setSize((prev) => {
+        // Round to avoid re-render loops from sub-pixel ResizeObserver noise.
+        const w = Math.round(width);
+        const h = Math.round(height);
+        if (prev && prev.width === w && prev.height === h) return prev;
+        return { width: w, height: h };
+      });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [widget.type]);
 
   useEffect(() => {
     if (widget.type !== "bar" && widget.type !== "line") return;
+    // Wait for the first real size measurement before the first render, so
+    // we don't render once at a default size and immediately again at the
+    // measured size (double flicker / double Tableau call on every mount).
+    if (!size) return;
 
     const tableau = window.tableau;
     if (!tableau) {
@@ -34,7 +68,7 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
     // missing enum property), the effect used to die silently and the card
     // would show "Rendering..." forever with no visible error.
     try {
-      spec = toVizInputSpec(widget, tableau);
+      spec = toVizInputSpec(widget, tableau, size);
     } catch (err: any) {
       setError(`Failed to build chart spec: ${err?.message || String(err)}`);
       return;
@@ -76,7 +110,7 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
       if (revoke) URL.revokeObjectURL(revoke);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [widget]);
+  }, [widget, size]);
 
   return (
     <div
@@ -119,12 +153,20 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
       {widget.type === "kpi" && <KpiBody widget={widget} />}
       {widget.type === "table" && <TableBody widget={widget} />}
       {(widget.type === "bar" || widget.type === "line") && (
-        <>
+        <div
+          ref={chartAreaRef}
+          style={{ width: "100%", height: "calc(100% - 36px)", position: "relative" }}
+        >
           {error && (
             <div style={{ color: "crimson", fontSize: 12, whiteSpace: "pre-wrap" }}>{error}</div>
           )}
           {imgUrl ? (
-            <img src={imgUrl} alt={widget.title} style={{ width: "100%", height: "auto" }} />
+            // Rendered at the size we told Tableau to target (maxWidth/
+            // maxHeight in the spec), so it's shown at native size rather
+            // than stretched via CSS - stretching a small default-size
+            // image doesn't recover the label legibility that comes from
+            // Tableau actually laying out the chart for this pixel size.
+            <img src={imgUrl} alt={widget.title} style={{ maxWidth: "100%", maxHeight: "100%", display: "block" }} />
           ) : (
             !error && <div style={{ fontSize: 12, color: "#999" }}>Rendering...</div>
           )}
@@ -133,7 +175,7 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
               spec: {debugInfo}
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
