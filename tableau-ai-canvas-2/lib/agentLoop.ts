@@ -208,7 +208,12 @@ export async function runAgentLoop(
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await anthropic.messages.create({
       model: "claude-sonnet-5",
-      max_tokens: 2048,
+      // 2048 was too tight - a single Build Dashboard turn can involve
+      // several tool_use blocks plus a large emit_widget payload (tables
+      // with many rows can be several KB of JSON). Running out of tokens
+      // mid-tool-call ends the turn with stop_reason='max_tokens' and no
+      // usable output, which showed up as an empty "Done." reply to the user.
+      max_tokens: 8192,
       system: systemPrompt,
       tools,
       messages
@@ -222,6 +227,13 @@ export async function runAgentLoop(
         .filter((b): b is Anthropic.TextBlock => b.type === "text")
         .map((b) => b.text)
         .join("\n");
+      // If the model hit the token cap mid-thought, tell the user rather
+      // than shipping whatever partial text got out.
+      if (response.stop_reason === "max_tokens") {
+        finalText =
+          (finalText ? finalText + "\n\n" : "") +
+          "(Note: I ran out of response space before finishing. Try asking for fewer/smaller widgets, or split the request into pieces.)";
+      }
       break;
     }
 
@@ -303,9 +315,22 @@ export async function runAgentLoop(
     messages.push({ role: "user", content: toolResults });
   }
 
-  if (finalText) return finalText;
+  // Post-loop diagnostics. The old fallback just returned "Done." whenever
+  // finalText was empty, which is what produced the frustrating "Done."
+  // reply with an empty canvas whenever anything went subtly wrong. Now we
+  // try to say something useful for each real failure mode.
   if (widgetCounter === 0 && lastError) {
     return `I couldn't fetch data from Tableau: ${lastError}`;
   }
-  return "Done.";
+  if (finalText && widgetCounter === 0) {
+    // Model gave a final text but never called emit_widget. Add a hint so
+    // the user knows the canvas is empty on purpose (or by mistake).
+    return finalText + "\n\n(No widget was added to the canvas - if you expected one, try rephrasing the request or naming the specific fields to include.)";
+  }
+  if (finalText) return finalText;
+  if (widgetCounter === 0) {
+    // Loop exited (or hit maxTurns) without any widget and without any text.
+    return "I wasn't able to build anything for that request. It may be too complex to compute in one go, or the requested fields don't exist in the datasource. Try breaking it into smaller pieces (e.g. one widget at a time) or naming the exact fields you want.";
+  }
+  return `Added ${widgetCounter} widget${widgetCounter === 1 ? "" : "s"} to the canvas.`;
 }
