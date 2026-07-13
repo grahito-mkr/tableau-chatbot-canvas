@@ -5,7 +5,11 @@ import type { Widget } from "@/lib/agentLoop";
  * KPI and table widgets are rendered directly as DOM (see WidgetCard) since
  * they don't need Tableau's chart renderer.
  */
-export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tableau"]>) {
+export function toVizInputSpec(
+  widget: Widget,
+  tableau: NonNullable<Window["tableau"]>,
+  size?: { width: number; height: number }
+) {
   const columnsField = widget.encoding?.columns;
   const rowsField = widget.encoding?.rows;
   const keys = widget.data.length > 0 ? Object.keys(widget.data[0]) : [];
@@ -149,6 +153,16 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
     description: widget.title,
     data: { values: coercedValues },
     mark: widget.type === "line" ? tableau.MarkType.Line : tableau.MarkType.Bar,
+    // Telling Tableau the actual pixel size to render at is what makes this
+    // behave like Tableau's own "fit" sizing: the viz server lays out axis
+    // labels, category spacing, and font size for that target canvas,
+    // rather than an unspecified default that doesn't know how big the
+    // widget card actually is (or how many categories are on the axis).
+    // Without this, a chart with many categories (e.g. 29 departments)
+    // renders shrunk-to-fit a default canvas, and the browser then
+    // stretches that already-tiny image via CSS, which doesn't recover any
+    // legibility - see WidgetCard.tsx for how `size` is measured.
+    ...(size ? { maxWidth: Math.round(size.width), maxHeight: Math.round(size.height) } : {}),
     encoding: {
       columns: { field: col, type: colType },
       rows: { field: row, type: rowType },
