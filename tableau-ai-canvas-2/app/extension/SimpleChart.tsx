@@ -2,19 +2,26 @@
 
 import { useMemo } from "react";
 import type { Widget } from "@/lib/agentLoop";
+import { ErrorBox } from "./charts/shared";
+import { HorizontalBar, VerticalBar } from "./charts/bar";
+import { LineOrAreaChart } from "./charts/line";
+import { PieChart } from "./charts/pie";
+import { ScatterChart } from "./charts/scatter";
+import { MultiSeriesBar } from "./charts/multiSeriesBar";
+import { Heatmap } from "./charts/heatmap";
 
 /**
- * A minimal SVG bar/line chart renderer, drawn directly in the browser
- * from the widget's data. Bypasses Tableau's createVizImageAsync entirely.
+ * Main chart dispatcher. Given a Widget from the agent, decide which
+ * concrete chart component to render and figure out the field roles
+ * (category / measure / series / x / y) it needs.
  *
- * Supports both orientations for bar charts:
- *   - orientation = 'vertical' (default): categories on X, measure on Y.
- *     This is what most people call a "column chart".
- *   - orientation = 'horizontal': measure on X, categories on Y. Bars grow
- *     from left to right. This is the "horizontal bar chart" shape - good
- *     for many categories or long labels (e.g. departments).
+ * Field-role resolution priority:
+ *   1. widget.sourceQuery.fields (measure = has aggregation `function`)
+ *   2. widget.encoding.columns / rows / color hints from the model
+ *   3. value shape (numeric vs. string) as a last resort
  *
- * Line charts are always drawn horizontally with time/category on X.
+ * This is what makes bar-vs-crosstab decisions deterministic instead of
+ * relying on Tableau's opaque createVizImageAsync layout.
  */
 export default function SimpleChart({
   widget,
@@ -25,356 +32,141 @@ export default function SimpleChart({
   width: number;
   height: number;
 }) {
-  const chart = useMemo(() => buildChartModel(widget), [widget]);
+  const model = useMemo(() => buildChartModel(widget), [widget]);
 
-  if ("error" in chart) {
-    return <div style={{ color: "#c00", fontSize: 12, padding: 8 }}>{chart.error}</div>;
+  if ("error" in model) return <ErrorBox message={model.error} />;
+
+  switch (model.kind) {
+    case "vertical-bar":
+      return (
+        <VerticalBar
+          rows={model.rows}
+          categoryKey={model.categoryKey}
+          measureKey={model.measureKey}
+          width={width}
+          height={height}
+        />
+      );
+    case "horizontal-bar":
+      return (
+        <HorizontalBar
+          rows={model.rows}
+          categoryKey={model.categoryKey}
+          measureKey={model.measureKey}
+          width={width}
+          height={height}
+        />
+      );
+    case "line":
+      return (
+        <LineOrAreaChart
+          rows={model.rows}
+          categoryKey={model.categoryKey}
+          measureKey={model.measureKey}
+          width={width}
+          height={height}
+          fill={false}
+        />
+      );
+    case "area":
+      return (
+        <LineOrAreaChart
+          rows={model.rows}
+          categoryKey={model.categoryKey}
+          measureKey={model.measureKey}
+          width={width}
+          height={height}
+          fill={true}
+        />
+      );
+    case "pie":
+      return (
+        <PieChart
+          rows={model.rows}
+          categoryKey={model.categoryKey}
+          measureKey={model.measureKey}
+          width={width}
+          height={height}
+          donut={model.donut}
+        />
+      );
+    case "scatter":
+      return (
+        <ScatterChart
+          rows={model.rows}
+          xKey={model.xKey}
+          yKey={model.yKey}
+          categoryKey={model.seriesKey}
+          labelKey={model.labelKey}
+          width={width}
+          height={height}
+        />
+      );
+    case "stacked-bar":
+    case "grouped-bar":
+      return (
+        <MultiSeriesBar
+          rows={model.rows}
+          categoryKey={model.categoryKey}
+          seriesKey={model.seriesKey}
+          measureKey={model.measureKey}
+          width={width}
+          height={height}
+          stacked={model.kind === "stacked-bar"}
+        />
+      );
+    case "heatmap":
+      return (
+        <Heatmap
+          rows={model.rows}
+          xKey={model.xKey}
+          yKey={model.yKey}
+          measureKey={model.measureKey}
+          width={width}
+          height={height}
+        />
+      );
   }
-
-  const { rows, categoryKey, measureKey, isLine, orientation } = chart;
-
-  if (!isLine && orientation === "horizontal") {
-    return (
-      <HorizontalBar
-        rows={rows}
-        categoryKey={categoryKey}
-        measureKey={measureKey}
-        width={width}
-        height={height}
-      />
-    );
-  }
-
-  return (
-    <VerticalChart
-      rows={rows}
-      categoryKey={categoryKey}
-      measureKey={measureKey}
-      isLine={isLine}
-      width={width}
-      height={height}
-    />
-  );
 }
 
-// ---- Vertical bar / line chart --------------------------------------------
-
-function VerticalChart({
-  rows,
-  categoryKey,
-  measureKey,
-  isLine,
-  width,
-  height
-}: {
-  rows: Record<string, unknown>[];
-  categoryKey: string;
-  measureKey: string;
-  isLine: boolean;
-  width: number;
-  height: number;
-}) {
-  const marginTop = 20;
-  const marginRight = 12;
-  const marginBottom = Math.min(90, Math.max(50, longestLabel(rows, categoryKey) * 6));
-  const marginLeft = Math.max(50, longestNumberLabel(rows, measureKey) * 8 + 20);
-
-  const innerW = Math.max(1, width - marginLeft - marginRight);
-  const innerH = Math.max(1, height - marginTop - marginBottom);
-
-  const values = rows.map((r) => Number(r[measureKey]) || 0);
-  const maxValue = Math.max(0, ...values);
-  const yScale = (v: number) => (maxValue === 0 ? innerH : innerH - (v / maxValue) * innerH);
-
-  const bandW = innerW / Math.max(1, rows.length);
-  const xForIndex = (i: number) => i * bandW + bandW / 2;
-  const yTicks = niceTicks(maxValue, 5);
-
-  return (
-    <svg
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
-      style={{ display: "block", fontFamily: "system-ui, sans-serif" }}
-    >
-      {yTicks.map((tick, i) => {
-        const y = marginTop + yScale(tick);
-        return (
-          <g key={`ytick-${i}`}>
-            <line
-              x1={marginLeft}
-              x2={marginLeft + innerW}
-              y1={y}
-              y2={y}
-              stroke="#eee"
-              strokeWidth={1}
-            />
-            <text x={marginLeft - 6} y={y + 4} textAnchor="end" fontSize={10} fill="#666">
-              {formatNumber(tick)}
-            </text>
-          </g>
-        );
-      })}
-
-      <text
-        x={12}
-        y={marginTop + innerH / 2}
-        transform={`rotate(-90 12 ${marginTop + innerH / 2})`}
-        textAnchor="middle"
-        fontSize={11}
-        fill="#333"
-      >
-        {measureKey}
-      </text>
-
-      {isLine ? (
-        <>
-          <polyline
-            points={rows
-              .map(
-                (r, i) => `${marginLeft + xForIndex(i)},${marginTop + yScale(Number(r[measureKey]) || 0)}`
-              )
-              .join(" ")}
-            fill="none"
-            stroke="#4c78a8"
-            strokeWidth={2}
-          />
-          {rows.map((r, i) => {
-            const cx = marginLeft + xForIndex(i);
-            const cy = marginTop + yScale(Number(r[measureKey]) || 0);
-            return (
-              <g key={`pt-${i}`}>
-                <circle cx={cx} cy={cy} r={3} fill="#4c78a8" />
-                <title>
-                  {String(r[categoryKey])}: {formatNumber(Number(r[measureKey]) || 0)}
-                </title>
-              </g>
-            );
-          })}
-        </>
-      ) : (
-        rows.map((r, i) => {
-          const v = Number(r[measureKey]) || 0;
-          const bw = Math.max(1, bandW * 0.7);
-          const bx = marginLeft + xForIndex(i) - bw / 2;
-          const by = marginTop + yScale(v);
-          const bh = marginTop + innerH - by;
-          return (
-            <g key={`bar-${i}`}>
-              <rect x={bx} y={by} width={bw} height={bh} fill="#4c78a8">
-                <title>
-                  {String(r[categoryKey])}: {formatNumber(v)}
-                </title>
-              </rect>
-              {bw >= 12 && (
-                <text x={bx + bw / 2} y={by - 3} textAnchor="middle" fontSize={10} fill="#333">
-                  {formatNumber(v)}
-                </text>
-              )}
-            </g>
-          );
-        })
-      )}
-
-      <line
-        x1={marginLeft}
-        x2={marginLeft + innerW}
-        y1={marginTop + innerH}
-        y2={marginTop + innerH}
-        stroke="#999"
-        strokeWidth={1}
-      />
-
-      {rows.map((r, i) => {
-        const cx = marginLeft + xForIndex(i);
-        const cy = marginTop + innerH + 12;
-        const label = String(r[categoryKey] ?? "");
-        const rotate = rows.length > 6;
-        return (
-          <text
-            key={`xlab-${i}`}
-            x={cx}
-            y={cy}
-            fontSize={10}
-            fill="#333"
-            textAnchor={rotate ? "end" : "middle"}
-            transform={rotate ? `rotate(-45 ${cx} ${cy})` : undefined}
-          >
-            {truncate(label, 24)}
-          </text>
-        );
-      })}
-
-      <text
-        x={marginLeft + innerW / 2}
-        y={height - 4}
-        textAnchor="middle"
-        fontSize={11}
-        fill="#333"
-      >
-        {categoryKey}
-      </text>
-    </svg>
-  );
-}
-
-// ---- Horizontal bar chart -------------------------------------------------
-
-function HorizontalBar({
-  rows,
-  categoryKey,
-  measureKey,
-  width,
-  height
-}: {
-  rows: Record<string, unknown>[];
-  categoryKey: string;
-  measureKey: string;
-  width: number;
-  height: number;
-}) {
-  const marginTop = 20;
-  const marginRight = 40; // room for value labels at end of bars
-  // Left margin sized to fit the longest category label - horizontal bars
-  // put those on the Y-axis so we need real space, not rotation. Cap at
-  // ~40% of the width so extreme labels don't crowd out the bars themselves.
-  const marginLeft = Math.min(
-    Math.max(width * 0.35, 80),
-    Math.max(80, longestLabel(rows, categoryKey) * 6 + 20)
-  );
-  const marginBottom = 40;
-
-  const innerW = Math.max(1, width - marginLeft - marginRight);
-  const innerH = Math.max(1, height - marginTop - marginBottom);
-
-  const values = rows.map((r) => Number(r[measureKey]) || 0);
-  const maxValue = Math.max(0, ...values);
-  const xScale = (v: number) => (maxValue === 0 ? 0 : (v / maxValue) * innerW);
-
-  const bandH = innerH / Math.max(1, rows.length);
-  const yForIndex = (i: number) => i * bandH + bandH / 2;
-  const xTicks = niceTicks(maxValue, 5);
-
-  return (
-    <svg
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
-      style={{ display: "block", fontFamily: "system-ui, sans-serif" }}
-    >
-      {/* X-axis vertical gridlines + tick labels below the chart */}
-      {xTicks.map((tick, i) => {
-        const x = marginLeft + xScale(tick);
-        return (
-          <g key={`xtick-${i}`}>
-            <line
-              x1={x}
-              x2={x}
-              y1={marginTop}
-              y2={marginTop + innerH}
-              stroke="#eee"
-              strokeWidth={1}
-            />
-            <text x={x} y={marginTop + innerH + 14} textAnchor="middle" fontSize={10} fill="#666">
-              {formatNumber(tick)}
-            </text>
-          </g>
-        );
-      })}
-
-      {/* Bars, one per row */}
-      {rows.map((r, i) => {
-        const v = Number(r[measureKey]) || 0;
-        const bh = Math.max(1, bandH * 0.7);
-        const by = marginTop + yForIndex(i) - bh / 2;
-        const bx = marginLeft;
-        const bw = xScale(v);
-        return (
-          <g key={`hbar-${i}`}>
-            <rect x={bx} y={by} width={bw} height={bh} fill="#4c78a8">
-              <title>
-                {String(r[categoryKey])}: {formatNumber(v)}
-              </title>
-            </rect>
-            {bh >= 10 && (
-              <text
-                x={bx + bw + 4}
-                y={by + bh / 2 + 3}
-                textAnchor="start"
-                fontSize={10}
-                fill="#333"
-              >
-                {formatNumber(v)}
-              </text>
-            )}
-          </g>
-        );
-      })}
-
-      {/* Y-axis category labels, positioned to the left of each bar */}
-      {rows.map((r, i) => {
-        const cy = marginTop + yForIndex(i) + 3;
-        const label = String(r[categoryKey] ?? "");
-        return (
-          <text
-            key={`ylab-${i}`}
-            x={marginLeft - 6}
-            y={cy}
-            fontSize={10}
-            fill="#333"
-            textAnchor="end"
-          >
-            {truncate(label, Math.max(10, Math.floor((marginLeft - 12) / 6)))}
-          </text>
-        );
-      })}
-
-      {/* Axis line on the left */}
-      <line
-        x1={marginLeft}
-        x2={marginLeft}
-        y1={marginTop}
-        y2={marginTop + innerH}
-        stroke="#999"
-        strokeWidth={1}
-      />
-
-      {/* Y-axis title (category field name) */}
-      <text
-        x={12}
-        y={marginTop + innerH / 2}
-        transform={`rotate(-90 12 ${marginTop + innerH / 2})`}
-        textAnchor="middle"
-        fontSize={11}
-        fill="#333"
-      >
-        {categoryKey}
-      </text>
-
-      {/* X-axis title (measure field name) */}
-      <text
-        x={marginLeft + innerW / 2}
-        y={height - 4}
-        textAnchor="middle"
-        fontSize={11}
-        fill="#333"
-      >
-        {measureKey}
-      </text>
-    </svg>
-  );
-}
-
-// ---- helpers --------------------------------------------------------------
+// ---- Field-role resolution ------------------------------------------------
 
 type ChartModel =
   | { error: string }
   | {
+      kind: "vertical-bar" | "horizontal-bar" | "line" | "area";
       rows: Record<string, unknown>[];
       categoryKey: string;
       measureKey: string;
-      isLine: boolean;
-      orientation: "vertical" | "horizontal";
+    }
+  | {
+      kind: "pie";
+      rows: Record<string, unknown>[];
+      categoryKey: string;
+      measureKey: string;
+      donut: boolean;
+    }
+  | {
+      kind: "scatter";
+      rows: Record<string, unknown>[];
+      xKey: string;
+      yKey: string;
+      seriesKey?: string;
+      labelKey?: string;
+    }
+  | {
+      kind: "stacked-bar" | "grouped-bar";
+      rows: Record<string, unknown>[];
+      categoryKey: string;
+      seriesKey: string;
+      measureKey: string;
+    }
+  | {
+      kind: "heatmap";
+      rows: Record<string, unknown>[];
+      xKey: string;
+      yKey: string;
+      measureKey: string;
     };
 
 function buildChartModel(widget: Widget): ChartModel {
@@ -387,15 +179,12 @@ function buildChartModel(widget: Widget): ChartModel {
     return { error: `Chart needs at least two fields, got: ${keys.join(", ") || "(none)"}` };
   }
 
-  const isLine = widget.type === "line";
-  const orientation: "vertical" | "horizontal" =
-    widget.orientation === "horizontal" ? "horizontal" : "vertical";
-
   const measureNames = new Set(
     (widget.sourceQuery?.fields || []).filter((f) => !!f.function).map((f) => f.fieldCaption)
   );
   const encColumns = widget.encoding?.columns;
   const encRows = widget.encoding?.rows;
+  const encSeries = widget.encoding?.color;
 
   const isNumericByShape = (field: string) => {
     let seen = false;
@@ -409,75 +198,168 @@ function buildChartModel(widget: Widget): ChartModel {
     return seen;
   };
 
-  let measureKey: string | undefined;
-  let categoryKey: string | undefined;
-
   const measureKeysFromSQ = keys.filter((k) => measureNames.has(k));
   const nonMeasureKeys = keys.filter((k) => !measureNames.has(k));
+
+  const kindHint = widget.type;
+  const isHorizontalBar = widget.type === "bar" && widget.orientation === "horizontal";
+
+  // ---- Pie / donut ---------------------------------------------------------
+  if (kindHint === "pie" || kindHint === "donut") {
+    const result = pickMeasureAndCategory(
+      keys,
+      rows,
+      measureKeysFromSQ,
+      nonMeasureKeys,
+      encColumns,
+      encRows,
+      isNumericByShape
+    );
+    if (!result.ok) return { error: result.err };
+    return {
+      kind: "pie",
+      rows,
+      categoryKey: result.categoryKey,
+      measureKey: result.measureKey,
+      donut: kindHint === "donut"
+    };
+  }
+
+  // ---- Scatter -------------------------------------------------------------
+  if (kindHint === "scatter") {
+    // Scatter needs two numeric axes. Prefer sourceQuery measures; fall back
+    // to any two numeric-by-shape fields.
+    const numericKeys = measureKeysFromSQ.length >= 2
+      ? measureKeysFromSQ
+      : keys.filter(isNumericByShape);
+    if (numericKeys.length < 2) {
+      return { error: "Scatter needs at least two numeric fields; the data only has " + numericKeys.length + "." };
+    }
+    // Honor encoding.columns/rows if they name real numeric fields.
+    const xKey = numericKeys.includes(encColumns || "") ? encColumns! : numericKeys[0];
+    const yKey = numericKeys.includes(encRows || "") ? encRows! : numericKeys.find((k) => k !== xKey) || numericKeys[1];
+    // Any leftover non-numeric key can be used as a color grouping.
+    const seriesKey = encSeries && keys.includes(encSeries)
+      ? encSeries
+      : keys.find((k) => k !== xKey && k !== yKey && !isNumericByShape(k));
+    const labelKey = keys.find((k) => k !== xKey && k !== yKey && k !== seriesKey);
+    return { kind: "scatter", rows, xKey, yKey, seriesKey, labelKey };
+  }
+
+  // ---- Stacked / grouped bar ----------------------------------------------
+  if (kindHint === "stacked-bar" || kindHint === "grouped-bar") {
+    if (keys.length < 3) {
+      return {
+        error:
+          `A ${kindHint} chart needs three fields (category, series, and measure); got: ${keys.join(", ")}.`
+      };
+    }
+    const result = pickMeasureOnly(keys, measureKeysFromSQ, isNumericByShape);
+    if (!result.ok) return { error: result.err };
+    const measureKey = result.measureKey;
+    // Pick category vs series from the two non-measure fields, honoring hints.
+    const others = keys.filter((k) => k !== measureKey);
+    const categoryKey = others.includes(encColumns || "")
+      ? encColumns!
+      : others.includes(encRows || "")
+        ? encRows!
+        : others[0];
+    const seriesKey = encSeries && others.includes(encSeries)
+      ? encSeries
+      : others.find((k) => k !== categoryKey) || others[1];
+    return { kind: kindHint, rows, categoryKey, seriesKey, measureKey };
+  }
+
+  // ---- Heatmap -------------------------------------------------------------
+  if (kindHint === "heatmap") {
+    if (keys.length < 3) {
+      return { error: `A heatmap needs three fields (x, y, measure); got: ${keys.join(", ")}.` };
+    }
+    const result = pickMeasureOnly(keys, measureKeysFromSQ, isNumericByShape);
+    if (!result.ok) return { error: result.err };
+    const measureKey = result.measureKey;
+    const others = keys.filter((k) => k !== measureKey);
+    const xKey = others.includes(encColumns || "") ? encColumns! : others[0];
+    const yKey = others.includes(encRows || "") ? encRows! : others.find((k) => k !== xKey) || others[1];
+    return { kind: "heatmap", rows, xKey, yKey, measureKey };
+  }
+
+  // ---- Line / area ---------------------------------------------------------
+  if (kindHint === "line" || kindHint === "area") {
+    const result = pickMeasureAndCategory(
+      keys,
+      rows,
+      measureKeysFromSQ,
+      nonMeasureKeys,
+      encColumns,
+      encRows,
+      isNumericByShape
+    );
+    if (!result.ok) return { error: result.err };
+    return { kind: kindHint, rows, categoryKey: result.categoryKey, measureKey: result.measureKey };
+  }
+
+  // ---- Default: bar (vertical or horizontal) ------------------------------
+  const barResult = pickMeasureAndCategory(
+    keys,
+    rows,
+    measureKeysFromSQ,
+    nonMeasureKeys,
+    encColumns,
+    encRows,
+    isNumericByShape
+  );
+  if (!barResult.ok) return { error: barResult.err };
+  return {
+    kind: isHorizontalBar ? "horizontal-bar" : "vertical-bar",
+    rows,
+    categoryKey: barResult.categoryKey,
+    measureKey: barResult.measureKey
+  };
+}
+
+function pickMeasureOnly(
+  keys: string[],
+  measureKeysFromSQ: string[],
+  isNumericByShape: (field: string) => boolean
+): { ok: true; measureKey: string } | { ok: false; err: string } {
+  if (measureKeysFromSQ.length >= 1) return { ok: true, measureKey: measureKeysFromSQ[0] };
+  const numericKeys = keys.filter(isNumericByShape);
+  if (numericKeys.length >= 1) return { ok: true, measureKey: numericKeys[0] };
+  return { ok: false, err: "Couldn't identify a numeric measure field in the data." };
+}
+
+function pickMeasureAndCategory(
+  keys: string[],
+  rows: Record<string, unknown>[],
+  measureKeysFromSQ: string[],
+  nonMeasureKeys: string[],
+  encColumns: string | undefined,
+  encRows: string | undefined,
+  isNumericByShape: (field: string) => boolean
+): { ok: true; measureKey: string; categoryKey: string } | { ok: false; err: string } {
   if (measureKeysFromSQ.length === 1 && nonMeasureKeys.length >= 1) {
-    measureKey = measureKeysFromSQ[0];
-    categoryKey = nonMeasureKeys.includes(encColumns || "")
+    const measureKey = measureKeysFromSQ[0];
+    const categoryKey = nonMeasureKeys.includes(encColumns || "")
       ? encColumns!
       : nonMeasureKeys.includes(encRows || "")
         ? encRows!
         : nonMeasureKeys[0];
-  } else {
-    const numericKeys = keys.filter(isNumericByShape);
-    if (numericKeys.length === 1) {
-      measureKey = numericKeys[0];
-      categoryKey = keys.find((k) => k !== measureKey) || keys[0];
-    } else if (encRows && keys.includes(encRows) && encColumns && keys.includes(encColumns)) {
-      measureKey = encRows;
-      categoryKey = encColumns;
-    } else {
-      categoryKey = keys[0];
-      measureKey = keys[1];
-    }
+    return { ok: true, measureKey, categoryKey };
   }
-
-  if (!measureKey || !categoryKey) {
-    return { error: "Couldn't determine which field is the category vs. the measure." };
+  const numericKeys = keys.filter(isNumericByShape);
+  if (numericKeys.length === 1) {
+    const measureKey = numericKeys[0];
+    const categoryKey = keys.find((k) => k !== measureKey) || keys[0];
+    return { ok: true, measureKey, categoryKey };
   }
-  return { rows, categoryKey, measureKey, isLine, orientation };
-}
-
-function longestLabel(rows: Record<string, unknown>[], key: string) {
-  let m = 0;
-  for (const r of rows) {
-    const s = String(r[key] ?? "");
-    if (s.length > m) m = s.length;
+  if (encRows && keys.includes(encRows) && encColumns && keys.includes(encColumns)) {
+    return { ok: true, measureKey: encRows, categoryKey: encColumns };
   }
-  return m;
-}
-
-function longestNumberLabel(rows: Record<string, unknown>[], key: string) {
-  let m = 1;
-  for (const r of rows) {
-    const s = formatNumber(Number(r[key]) || 0);
-    if (s.length > m) m = s.length;
+  // Fallback: assume second key is the measure (matches how the tool prompt
+  // asks the model to structure its emit_widget rows).
+  if (keys.length >= 2) {
+    return { ok: true, measureKey: keys[1], categoryKey: keys[0] };
   }
-  return m;
-}
-
-function truncate(s: string, n: number) {
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
-}
-
-function formatNumber(n: number) {
-  if (!Number.isFinite(n)) return String(n);
-  if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (Math.abs(n) >= 10_000) return (n / 1_000).toFixed(1) + "K";
-  if (Number.isInteger(n)) return n.toString();
-  return n.toFixed(2).replace(/\.?0+$/, "");
-}
-
-function niceTicks(maxValue: number, count: number): number[] {
-  if (!Number.isFinite(maxValue) || maxValue <= 0) return [0];
-  const rawStep = maxValue / count;
-  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
-  const norm = rawStep / mag;
-  const step = mag * (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1);
-  const ticks: number[] = [];
-  for (let v = 0; v <= maxValue + step / 2; v += step) ticks.push(Math.round(v * 1000) / 1000);
-  return ticks;
+  return { ok: false, err: "Couldn't identify a category and measure in the data." };
 }
