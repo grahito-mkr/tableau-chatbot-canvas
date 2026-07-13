@@ -112,29 +112,88 @@ function KpiBody({ widget }: { widget: Widget }) {
 }
 
 function TableBody({ widget }: { widget: Widget }) {
-  const keys = widget.data.length ? Object.keys(widget.data[0]) : [];
+  const rows = widget.data || [];
+  const keys = rows.length ? Object.keys(rows[0]) : [];
+
+  // Detect which columns are numeric so we can right-align them and format
+  // numbers consistently. A column counts as numeric if every non-null value
+  // parses as a finite number.
+  const numericCols = new Set<string>();
+  for (const k of keys) {
+    let seen = false;
+    let allNumeric = true;
+    for (const r of rows) {
+      const v = (r as Record<string, unknown>)[k];
+      if (v === null || v === undefined || v === "") continue;
+      seen = true;
+      const n = typeof v === "number" ? v : Number(v);
+      if (!Number.isFinite(n)) {
+        allNumeric = false;
+        break;
+      }
+    }
+    if (seen && allNumeric) numericCols.add(k);
+  }
+
+  const formatCell = (k: string, v: unknown) => {
+    if (v === null || v === undefined || v === "") return "";
+    if (numericCols.has(k)) {
+      const n = typeof v === "number" ? v : Number(v);
+      if (!Number.isFinite(n)) return String(v);
+      if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+      if (Math.abs(n) >= 10_000) return (n / 1_000).toFixed(1) + "K";
+      if (Number.isInteger(n)) return n.toLocaleString();
+      return n.toFixed(2).replace(/\.?0+$/, "");
+    }
+    return String(v);
+  };
+
   return (
-    <table style={{ width: "100%", fontSize: 12, marginTop: 8, borderCollapse: "collapse" }}>
-      <thead>
-        <tr>
-          {keys.map((k) => (
-            <th key={k} style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 4 }}>
-              {k}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {widget.data.slice(0, 10).map((row, i) => (
-          <tr key={i}>
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: 8 }}>
+      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+        <thead style={{ position: "sticky", top: 0, background: "#fff" }}>
+          <tr>
             {keys.map((k) => (
-              <td key={k} style={{ padding: 4, borderBottom: "1px solid #f0f0f0" }}>
-                {String((row as any)[k])}
-              </td>
+              <th
+                key={k}
+                style={{
+                  textAlign: numericCols.has(k) ? "right" : "left",
+                  borderBottom: "1px solid #ccc",
+                  padding: "6px 8px",
+                  fontWeight: 600,
+                  color: "#333",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                {k}
+              </th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : "#fafafa" }}>
+              {keys.map((k) => (
+                <td
+                  key={k}
+                  style={{
+                    padding: "5px 8px",
+                    borderBottom: "1px solid #f0f0f0",
+                    textAlign: numericCols.has(k) ? "right" : "left",
+                    fontVariantNumeric: numericCols.has(k) ? "tabular-nums" : "normal",
+                    whiteSpace: "nowrap"
+                  }}
+                >
+                  {formatCell(k, (row as Record<string, unknown>)[k])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length === 0 && (
+        <div style={{ padding: 12, color: "#999", fontSize: 12 }}>No rows to display.</div>
+      )}
+    </div>
   );
 }
