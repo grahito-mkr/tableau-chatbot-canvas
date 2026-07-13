@@ -8,12 +8,7 @@ import type { Widget } from "@/lib/agentLoop";
 export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tableau"]>) {
   const columnsField = widget.encoding?.columns;
   const rowsField = widget.encoding?.rows;
-
-  // Fall back to the first two keys of the data if the model didn't specify
-  // an encoding explicitly.
   const keys = widget.data.length > 0 ? Object.keys(widget.data[0]) : [];
-  const col = columnsField || keys[0];
-  const row = rowsField || keys[1];
 
   // sourceQuery.fields (captured from the query_data call that produced this
   // widget's data - see agentLoop.ts) tells us, per field, whether it was
@@ -52,6 +47,60 @@ export function toVizInputSpec(widget: Widget, tableau: NonNullable<Window["tabl
     if (hasSourceQueryInfo) return measureFieldNames.has(field);
     return valueShapeIsNumeric(field);
   };
+
+  // Which of the (up to) two fields is the category and which is the
+  // measure, independent of the order they happen to appear in the row
+  // object. A standard vertical bar/column chart needs the category
+  // (Discrete) field on `columns` and the measure (Continuous) field on
+  // `rows` - if the model emitted the measure first in its JSON (e.g.
+  // { "Branch Id": ..., "Total Leaving Employees": ... } vs the reverse),
+  // blindly taking keys[0]/keys[1] as columns/rows respectively can put the
+  // measure on columns and the category on rows. Tableau renders THAT shape
+  // as a crosstab/highlight table (each discrete value becomes its own
+  // column header) instead of a normal bar chart - which is exactly what
+  // produced the truncated-header, one-bar-per-column layout.
+  const otherKey = (used: string | undefined) => keys.find((k) => k !== used);
+  let categoryField: string | undefined;
+  let measureFieldGuess: string | undefined;
+
+  if (columnsField || rowsField) {
+    // Model gave an explicit encoding. Still validate it against the
+    // measure/dimension metadata when we have it: nothing in the tool
+    // description tells the model which shelf a measure belongs on, so an
+    // explicit encoding can be just as backwards as the positional default
+    // was (e.g. encoding: { columns: "Total Leaving Employees", rows:
+    // "Branch Id" }). If exactly one of the two named fields is a known
+    // measure, force it onto `rows` and the other onto `columns`,
+    // regardless of which way the model assigned them.
+    if (hasSourceQueryInfo && columnsField && rowsField) {
+      const colIsMeasure = measureFieldNames.has(columnsField);
+      const rowIsMeasure = measureFieldNames.has(rowsField);
+      if (colIsMeasure && !rowIsMeasure) {
+        categoryField = rowsField;
+        measureFieldGuess = columnsField;
+      } else {
+        categoryField = columnsField;
+        measureFieldGuess = rowsField;
+      }
+    } else {
+      categoryField = columnsField;
+      measureFieldGuess = rowsField;
+    }
+  } else if (hasSourceQueryInfo && keys.length >= 2) {
+    // Use the measure/dimension metadata to assign roles correctly,
+    // regardless of key order in the row object.
+    const measureKey = keys.find((k) => measureFieldNames.has(k));
+    const dimensionKey = keys.find((k) => !measureFieldNames.has(k));
+    categoryField = dimensionKey ?? keys[0];
+    measureFieldGuess = measureKey ?? otherKey(categoryField);
+  } else {
+    // No metadata to go on - fall back to positional default.
+    categoryField = keys[0];
+    measureFieldGuess = keys[1];
+  }
+
+  const col = categoryField ?? keys[0];
+  const row = measureFieldGuess ?? otherKey(col) ?? keys[1];
 
   const { Discrete, Continuous } = tableau.VizImageEncodingType;
   const colType = isNumericField(col) ? Continuous : Discrete;
