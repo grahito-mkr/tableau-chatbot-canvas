@@ -81,7 +81,7 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
       {widget.type === "kpi" && <KpiBody widget={widget} />}
       {widget.type === "table" && <TableBody widget={widget} />}
 
-      {(widget.type === "bar" || widget.type === "line") && (
+      {widget.type !== "kpi" && widget.type !== "table" && (
         <div ref={chartAreaRef} style={{ flex: 1, minHeight: 0, position: "relative" }}>
           {size && <SimpleChart widget={widget} width={size.width} height={size.height} />}
         </div>
