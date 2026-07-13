@@ -65,7 +65,13 @@ const tools: Anthropic.Tool[] = [
       "- 'stacked-bar': multi-series bar where each bar is split into stacked color segments by a second dimension. `data` = [{ Category, Series, Measure }, ...] - THREE fields per row. Rows for the same Category+Series are auto-summed.\n" +
       "- 'grouped-bar': same data shape as stacked-bar, but each series is a side-by-side bar within the category rather than stacked. Use when the user asks to 'compare' series values.\n" +
       "- 'heatmap': a grid of colored cells where color intensity = measure value. `data` = [{ XField, YField, Measure }, ...] - THREE fields per row. Use for showing patterns across two dimensions (e.g. day-of-week vs. hour).\n" +
-      "- 'table': plain data grid. `data` = array of rows.\n" +
+      "- 'table': a plain data grid. `data` = an array of row objects with any number of columns; each row object's KEYS become the column headers in the order they appear. Use tables when:\n" +
+      "    (a) the user explicitly asks for a table or a list, OR\n" +
+      "    (b) the user wants multiple metrics per row (e.g. 'month, total leavers, top department, avg tenure'),\n" +
+      "    (c) the answer is inherently rows of details rather than one number or a trend.\n" +
+      "  Include ALL the columns the user asked for, in the order they asked. Column names in the data must exactly match the field names you queried (e.g. 'Month', not 'month'). If a request needs a derived column that isn't directly queryable (like 'top department per month'), fetch the underlying data with query_data (e.g. Month + Department + count), then do the aggregation client-side inside emit_widget's data array - do NOT skip the widget just because one column is derived.\n" +
+      "\n" +
+      "IMPORTANT: Every user request that asks you to build/create/show something MUST result in at least one emit_widget call. Do not reply 'Done' or a summary without having actually emitted a widget. If the user's request is ambiguous, still make a reasonable attempt (emit the closest widget you can) and note the ambiguity in your text reply - don't leave the canvas empty.\n" +
       "\n" +
       "ORIENTATION (for type='bar' only):\n" +
       "- Use orientation='vertical' (default) for a 'column chart' or when the CATEGORY is on the X-axis and the MEASURE is on the Y-axis. Bars grow upward.\n" +
