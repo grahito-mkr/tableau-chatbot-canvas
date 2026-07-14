@@ -271,6 +271,15 @@ export default function ExtensionPage() {
             cols={{ lg: 12 }}
             rowHeight={40}
             onLayoutChange={(l) => setLayout(l)}
+            // Any DOM element matching this selector will NOT start a drag
+            // when mousedown'd. Without it, react-grid-layout intercepts
+            // clicks on the widget's remove (x) button as the start of a
+            // drag gesture whenever there's even a pixel of pointer
+            // movement between down and up - which is why "sometimes I
+            // can't delete a chart" was so common. The .rgl-no-drag class
+            // is applied to every button/interactive control inside
+            // WidgetCard (see WidgetCard.tsx).
+            draggableCancel=".rgl-no-drag"
           >
             {widgets.map((w) => {
               const status = widgetStatus[w.id] || {};
