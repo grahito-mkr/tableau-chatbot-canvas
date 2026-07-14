@@ -29,10 +29,19 @@ export default function ExtensionPage() {
   // dashboard - see app/extension/nativeFilters.ts. We don't render any
   // filter UI ourselves anymore.
   const [filters, setFilters] = useState<QueryFilter[]>([]);
+  // Transient per-widget refresh status - shows a spinner while a widget's
+  // data is being re-fetched after a filter change, and an error indicator
+  // if the refresh failed. Not persisted (rebuilt at runtime).
+  const [widgetStatus, setWidgetStatus] = useState<Record<string, { refreshing?: boolean; error?: string }>>({});
   const [initError, setInitError] = useState<string | null>(null);
   const nextY = useRef(0);
   const initStarted = useRef(false);
   const unwatchFilters = useRef<(() => void) | null>(null);
+  // Serialize filter state so we can compare and skip effect firings when
+  // nothing has actually changed - the very first render always transitions
+  // filters from [] to whatever's currently on the dashboard, and we don't
+  // want that transition (or any no-op re-renders) to requery every widget.
+  const lastAppliedFiltersRef = useRef<string | null>(null);
 
   function initTableau() {
     if (initStarted.current) return; // avoid double-initializing (onLoad + poll can both fire)
@@ -118,24 +127,58 @@ export default function ExtensionPage() {
   // Claude call needed, so this is fast and doesn't cost anything. Widgets
   // that predate this feature (no sourceQuery) are left untouched.
   useEffect(() => {
+    // Serialize filters to detect real vs. no-op changes. The first render
+    // transitions filters from [] to whatever's on the dashboard - if
+    // there's no dashboard filter, the transition is []->[] and we skip.
+    // If there IS one, the transition triggers exactly once for the initial
+    // read, then again on each user change.
+    const serialized = JSON.stringify(filters);
+    if (lastAppliedFiltersRef.current === serialized) return;
+    lastAppliedFiltersRef.current = serialized;
+
     const t = setTimeout(() => {
+      // Read the current widgets fresh - the closure was capturing them
+      // whenever the effect re-registered, which sometimes ran on stale data.
       setWidgets((prev) => {
-        prev.forEach((w) => {
-          if (!w.sourceQuery) return;
+        const toRefresh = prev.filter((w) => w.sourceQuery);
+        if (toRefresh.length === 0) return prev;
+
+        // Mark them all as refreshing up front so every card shows the
+        // spinner at the same time, not staggered by network latency.
+        setWidgetStatus((s) => {
+          const next = { ...s };
+          for (const w of toRefresh) next[w.id] = { refreshing: true };
+          return next;
+        });
+
+        for (const w of toRefresh) {
           fetch("/api/requery", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ fields: w.sourceQuery!.fields, filters })
           })
-            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`requery failed (${r.status})`))))
+            .then(async (r) => {
+              if (!r.ok) {
+                const body = await r.text().catch(() => "");
+                throw new Error(body || `HTTP ${r.status}`);
+              }
+              return r.json();
+            })
             .then((json) => {
-              setWidgets((cur) => cur.map((cw) => (cw.id === w.id ? { ...cw, data: json.data || [] } : cw)));
+              setWidgets((cur) =>
+                cur.map((cw) => (cw.id === w.id ? { ...cw, data: json.data || [] } : cw))
+              );
+              setWidgetStatus((s) => ({ ...s, [w.id]: { refreshing: false } }));
             })
             .catch((err) => {
               // eslint-disable-next-line no-console
               console.error(`[page] failed to refresh widget "${w.title}" for new filters:`, err);
+              setWidgetStatus((s) => ({
+                ...s,
+                [w.id]: { refreshing: false, error: err?.message || "Refresh failed" }
+              }));
             });
-        });
+        }
         return prev;
       });
     }, 400);
@@ -229,11 +272,19 @@ export default function ExtensionPage() {
             rowHeight={40}
             onLayoutChange={(l) => setLayout(l)}
           >
-            {widgets.map((w) => (
-              <div key={w.id}>
-                <WidgetCard widget={w} onRemove={() => removeWidget(w.id)} />
-              </div>
-            ))}
+            {widgets.map((w) => {
+              const status = widgetStatus[w.id] || {};
+              return (
+                <div key={w.id}>
+                  <WidgetCard
+                    widget={w}
+                    onRemove={() => removeWidget(w.id)}
+                    refreshing={status.refreshing}
+                    refreshError={status.error}
+                  />
+                </div>
+              );
+            })}
           </ResponsiveGridLayout>
           {widgets.length === 0 && (
             <div style={{ color: "#999", marginTop: 40, textAlign: "center" }}>
