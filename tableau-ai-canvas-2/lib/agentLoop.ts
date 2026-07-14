@@ -16,7 +16,14 @@ const tools: Anthropic.Tool[] = [
     description:
       "Run a live query against the Tableau datasource and return real rows. Always call this before emit_widget so numbers are real, not guessed. " +
       "Any filters currently set in the user's filter bar (e.g. a date range or a selected branch) are already applied automatically to every call " +
-      "of this tool - you don't need to repeat them, but you may add additional `filters` on top if the user's question asks for something more specific.",
+      "of this tool - you don't need to repeat them, but you may add additional `filters` on top if the user's question asks for something more specific.\n\n" +
+      "IMPORTANT limits on the `filters` parameter:\n" +
+      "- `filters` ONLY works on DIMENSION fields (categorical text fields like Department, Branch, Region, Month). It CANNOT filter on measures (aggregated numeric fields like 'Count Leaving Employee', 'Sum of Sales'). Trying to filter a measure returns a 400 error from Tableau.\n" +
+      "- Do NOT try to filter by 'greater than', 'less than', or numeric thresholds through `filters`. Filters only support equality/set membership: 'field X is in this list of values' (or `exclude: true` to invert).\n" +
+      "- To filter by a computed threshold (e.g. 'departments with more than 5 leavers', 'top N by count'), fetch the full aggregated results first, then filter/sort/limit the rows CLIENT-SIDE inside the `data` array you pass to emit_widget. This is standard practice - query returns everything, emit_widget only includes the rows you want to show.\n" +
+      "- To find 'top N' or 'max' per group (e.g. 'highest department per month'), fetch (Group1, Group2, MeasureCount) as three fields, then pick the argmax row per Group1 client-side before emitting.\n" +
+      "\n" +
+      "If a query_data call returns an error, DO NOT retry with the same filters - restructure the request (drop the problematic filter, fetch broader data and filter client-side, or ask fewer fields).",
     input_schema: {
       type: "object",
       properties: {
@@ -35,10 +42,11 @@ const tools: Anthropic.Tool[] = [
         },
         filters: {
           type: "array",
+          description: "Set filters on DIMENSION fields only. Each filter narrows results to rows where `field` is in `values` (or NOT in `values` if `exclude` is true). Never use for measures/aggregations.",
           items: {
             type: "object",
             properties: {
-              field: { type: "string" },
+              field: { type: "string", description: "Must be a DIMENSION field (categorical, non-aggregated), not a measure." },
               values: { type: "array", items: { type: "string" } },
               exclude: { type: "boolean" }
             },
@@ -320,16 +328,22 @@ export async function runAgentLoop(
   // reply with an empty canvas whenever anything went subtly wrong. Now we
   // try to say something useful for each real failure mode.
   if (widgetCounter === 0 && lastError) {
-    return `I couldn't fetch data from Tableau: ${lastError}`;
+    // Try to translate the most common raw Tableau errors into plain-language
+    // hints so the user isn't staring at a 400 JSON dump.
+    let hint = "";
+    if (/Unable to convert value.*for Filter on Field/i.test(lastError)) {
+      hint =
+        "\n\nHint: this usually means the request tried to filter a measure/aggregated field. Try rephrasing without a numeric threshold (e.g. 'top 10 by count' instead of 'more than X'), or ask for the raw data and I'll filter it after fetching.";
+    } else if (/Field .* does not exist/i.test(lastError) || /Field .* not found/i.test(lastError)) {
+      hint = "\n\nHint: one of the requested fields doesn't exist on this datasource. Try rephrasing with the actual field name, or ask 'what fields are available?' first.";
+    }
+    return `I couldn't fetch data from Tableau: ${lastError}${hint}`;
   }
   if (finalText && widgetCounter === 0) {
-    // Model gave a final text but never called emit_widget. Add a hint so
-    // the user knows the canvas is empty on purpose (or by mistake).
     return finalText + "\n\n(No widget was added to the canvas - if you expected one, try rephrasing the request or naming the specific fields to include.)";
   }
   if (finalText) return finalText;
   if (widgetCounter === 0) {
-    // Loop exited (or hit maxTurns) without any widget and without any text.
     return "I wasn't able to build anything for that request. It may be too complex to compute in one go, or the requested fields don't exist in the datasource. Try breaking it into smaller pieces (e.g. one widget at a time) or naming the exact fields you want.";
   }
   return `Added ${widgetCounter} widget${widgetCounter === 1 ? "" : "s"} to the canvas.`;
