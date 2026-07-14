@@ -17,7 +17,6 @@ export default function WidgetCard({
 }) {
   const chartAreaRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
-  const [errorExpanded, setErrorExpanded] = useState(false);
 
   // Bar/line charts are drawn as SVG in the browser (see SimpleChart.tsx),
   // so we just need the container's current size. ResizeObserver keeps it
@@ -91,9 +90,7 @@ export default function WidgetCard({
             </span>
           )}
           {!refreshing && refreshError && (
-            <button
-              onClick={() => setErrorExpanded((v) => !v)}
-              title={errorExpanded ? "Hide error details" : "Show error details"}
+            <span
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -104,12 +101,11 @@ export default function WidgetCard({
                 borderRadius: 10,
                 padding: "1px 8px",
                 whiteSpace: "nowrap",
-                flexShrink: 0,
-                cursor: "pointer"
+                flexShrink: 0
               }}
             >
-              ⚠ stale {errorExpanded ? "▲" : "▼"}
-            </button>
+              ⚠ stale
+            </span>
           )}
         </div>
         <button
@@ -135,10 +131,9 @@ export default function WidgetCard({
         </button>
       </div>
 
-      {/* Expanded error detail - shows the raw refresh error when the
-          "stale" badge is clicked. Kept collapsed by default so it doesn't
-          take space when things are working. */}
-      {errorExpanded && refreshError && (
+      {/* Always show refresh error inline. What went wrong is what users
+          need to see - hiding it behind a click just adds friction. */}
+      {refreshError && !refreshing && (
         <div
           style={{
             fontSize: 11,
