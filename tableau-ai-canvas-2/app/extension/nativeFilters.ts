@@ -34,19 +34,43 @@ export async function readDashboardFilters(tableau: NonNullable<Window["tableau"
       // "MONTH(Month)" or "YEAR([Order Date])". VDS won't accept those -
       // it needs the underlying field name. Strip the function wrapper.
       const rawFieldName = unwrapFieldName(f.fieldName);
-      // The wrapper (if any) also tells us the granularity Tableau applied,
-      // which we use below when formatting Date values back to strings.
+      // The wrapper (if any) also tells us the granularity Tableau applied.
       const granularity = extractGranularity(f.fieldName);
 
       if (f.filterType === "categorical") {
         if (f.isAllSelected) continue; // "all selected" = not actually narrowing anything
-        // Prefer v.value (the raw underlying value - a Date or number)
-        // over v.formattedValue (a display string like "Jun 26" that won't
-        // match the raw data stored in the datasource). Format Dates back
-        // to the string representation the underlying data likely uses,
-        // based on the filter's granularity.
+
+        // Special case: a "MONTH(field) = June" style filter is exposed by
+        // Tableau as a CATEGORICAL filter, but the underlying field is a
+        // real date column. Formatting the picked Date as a truncated
+        // string (e.g. "2026-06") doesn't work - VDS rejects it as a type
+        // mismatch. The semantically correct translation is a RANGE filter
+        // covering the picked period: "June 2026" = [2026-06-01, 2026-07-01).
+        // This also handles Tableau's inclusion of multiple months as a
+        // union of ranges - though VDS only supports one min/max range at a
+        // time, so if the user picked more than one month we fall back to
+        // covering the full span from earliest to latest.
+        if (granularity && f.appliedValues?.some((v: any) => v.value instanceof Date)) {
+          const dates = f.appliedValues
+            .map((v: any) => v.value)
+            .filter((d: any): d is Date => d instanceof Date && !isNaN(d.getTime()));
+          if (dates.length === 0) continue;
+
+          // Sort so we can take the earliest as the range start and derive
+          // the latest's period-end as the range end.
+          dates.sort((a: Date, b: Date) => a.getTime() - b.getTime());
+          const first = dates[0];
+          const last = dates[dates.length - 1];
+          const min = periodStart(first, granularity);
+          const max = periodEnd(last, granularity);
+          results.push({ field: rawFieldName, type: "range", min, max });
+          continue;
+        }
+
+        // Non-date categorical filter: use raw v.value, falling back to
+        // v.formattedValue only when raw is missing.
         const values = (f.appliedValues || [])
-          .map((v: any) => formatFilterValue(v.value, v.formattedValue, granularity))
+          .map((v: any) => (v.value !== undefined && v.value !== null ? String(v.value) : v.formattedValue))
           .filter((v: unknown): v is string => typeof v === "string" && v.length > 0);
         if (values.length === 0) continue;
         results.push({ field: rawFieldName, type: "set", values, exclude: !!f.isExcludeMode });
@@ -152,44 +176,82 @@ function extractGranularity(name: string): Granularity | null {
 }
 
 /**
- * Turn a raw filter value into the string form most likely to match how
- * the datasource stores it. Tableau's Filter API returns Date objects for
- * truncated-date filters; the underlying data is usually stored as an
- * ISO-ish string (e.g. "2026-06" for a MONTH-truncated field). We format
- * the Date to match that granularity. For non-date values we just
- * stringify. As a last resort we fall back to the formatted display.
- *
- * This is inherently best-effort: how the underlying data is stored
- * depends on the datasource (some databases store dates as full ISO
- * timestamps, others as strings the analyst pre-formatted). If a specific
- * shape doesn't match, the requery will run but return zero rows - which
- * is at least a no-op rather than an error.
+ * ISO-date string for the start of the period that `d` falls into, at the
+ * given granularity. E.g. periodStart(Date(2026-06-15), "MONTH") =
+ * "2026-06-01". Uses LOCAL date components (not UTC) because Tableau's
+ * Filter API returns Dates constructed from the local timezone, and
+ * getUTC* would sometimes fall back to the previous day / month depending
+ * on the user's UTC offset (Jakarta = UTC+7, so midnight-local is 5pm-UTC
+ * the day before).
  */
-function formatFilterValue(
-  rawValue: unknown,
-  formattedValue: string | undefined,
-  granularity: Granularity | null
-): string | undefined {
-  if (rawValue instanceof Date && !isNaN(rawValue.getTime())) {
-    const y = rawValue.getUTCFullYear();
-    const m = String(rawValue.getUTCMonth() + 1).padStart(2, "0");
-    const d = String(rawValue.getUTCDate()).padStart(2, "0");
-    switch (granularity) {
-      case "YEAR":
-        return `${y}`;
-      case "QUARTER": {
-        const q = Math.floor(rawValue.getUTCMonth() / 3) + 1;
-        return `${y}-Q${q}`;
-      }
-      case "MONTH":
-        return `${y}-${m}`;
-      case "DAY":
-      case "WEEK":
-      default:
-        return `${y}-${m}-${d}`;
+function periodStart(d: Date, granularity: Granularity): string {
+  const y = d.getFullYear();
+  const m = d.getMonth(); // 0-indexed
+  const day = d.getDate();
+  switch (granularity) {
+    case "YEAR":
+      return isoDate(y, 0, 1);
+    case "QUARTER": {
+      const qStartMonth = Math.floor(m / 3) * 3;
+      return isoDate(y, qStartMonth, 1);
     }
+    case "MONTH":
+      return isoDate(y, m, 1);
+    case "WEEK": {
+      // Week starts Sunday - shift the day back to the previous Sunday.
+      const dow = d.getDay(); // 0 = Sunday
+      const weekStart = new Date(y, m, day - dow);
+      return isoDate(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate());
+    }
+    case "DAY":
+    case "HOUR":
+    case "MINUTE":
+    case "SECOND":
+    default:
+      return isoDate(y, m, day);
   }
-  if (rawValue !== undefined && rawValue !== null) return String(rawValue);
-  if (typeof formattedValue === "string" && formattedValue.length > 0) return formattedValue;
-  return undefined;
+}
+
+/**
+ * ISO-date string for the LAST day of the period `d` falls into.
+ * Range filters in VDS are typically inclusive on both ends, so we return
+ * the last day rather than "start of next period". If your VDS is
+ * exclusive-max, swap this to `periodStartOfNext` and adjust the caller.
+ */
+function periodEnd(d: Date, granularity: Granularity): string {
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const day = d.getDate();
+  switch (granularity) {
+    case "YEAR":
+      return isoDate(y, 11, 31);
+    case "QUARTER": {
+      const qEndMonth = Math.floor(m / 3) * 3 + 2;
+      return isoDate(y, qEndMonth, daysInMonth(y, qEndMonth));
+    }
+    case "MONTH":
+      return isoDate(y, m, daysInMonth(y, m));
+    case "WEEK": {
+      const dow = d.getDay();
+      const weekEnd = new Date(y, m, day - dow + 6);
+      return isoDate(weekEnd.getFullYear(), weekEnd.getMonth(), weekEnd.getDate());
+    }
+    case "DAY":
+    case "HOUR":
+    case "MINUTE":
+    case "SECOND":
+    default:
+      return isoDate(y, m, day);
+  }
+}
+
+function isoDate(year: number, monthZeroIndexed: number, day: number): string {
+  const m = String(monthZeroIndexed + 1).padStart(2, "0");
+  const d = String(day).padStart(2, "0");
+  return `${year}-${m}-${d}`;
+}
+
+function daysInMonth(year: number, monthZeroIndexed: number): number {
+  // Day 0 of next month = last day of this month.
+  return new Date(year, monthZeroIndexed + 1, 0).getDate();
 }
