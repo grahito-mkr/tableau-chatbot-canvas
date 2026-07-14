@@ -18,12 +18,18 @@ type Session = { token: string; siteId: string; expiresAt: number };
 // Module-level cache. On a warm serverless instance this avoids re-authenticating
 // on every request. On a cold start it just signs in again.
 let cachedSession: Session | null = null;
+// In-flight sign-in promise, if any. Serializing sign-in prevents the
+// thundering-herd problem: when several concurrent tool calls (e.g. Build
+// Dashboard firing multiple query_data requests in parallel) all hit a 401
+// at once and each try to re-authenticate, Tableau's PAT session limit
+// (~10 sessions per PAT by default) causes all-but-one of them to be
+// invalidated - which cascades into more 401s and looks random from the
+// user's perspective ("this error shows up from time to time"). By making
+// concurrent callers share a single sign-in promise, we only ever have one
+// auth request in flight against Tableau.
+let signInInFlight: Promise<Session> | null = null;
 
-async function signIn(): Promise<Session> {
-  if (cachedSession && cachedSession.expiresAt > Date.now()) {
-    return cachedSession;
-  }
-
+async function doSignIn(): Promise<Session> {
   const res = await fetch(`${SERVER}/api/${API_VERSION}/auth/signin`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -49,6 +55,20 @@ async function signIn(): Promise<Session> {
   return cachedSession;
 }
 
+async function signIn(): Promise<Session> {
+  if (cachedSession && cachedSession.expiresAt > Date.now()) {
+    return cachedSession;
+  }
+  // If a sign-in is already in flight, everyone waits for it and reuses
+  // its result. Only after that promise settles do we clear it, so a
+  // subsequent sign-in triggers a new request.
+  if (signInInFlight) return signInInFlight;
+  signInInFlight = doSignIn().finally(() => {
+    signInInFlight = null;
+  });
+  return signInInFlight;
+}
+
 function invalidateSession() {
   cachedSession = null;
 }
@@ -61,7 +81,9 @@ function invalidateSession() {
  * that happens every subsequent request 401s until either the function
  * goes cold or we force a re-auth. This retry pattern makes that
  * transparent - the caller just sees a slightly slower first request
- * after invalidation.
+ * after invalidation. Combined with the sign-in serialization above,
+ * concurrent 401s all funnel into ONE re-auth rather than triggering the
+ * thundering-herd session-limit issue.
  */
 async function authorizedFetch(url: string, init: RequestInit): Promise<Response> {
   const session = await signIn();
@@ -75,9 +97,16 @@ async function authorizedFetch(url: string, init: RequestInit): Promise<Response
 
   let res = await fetch(url, withAuth(session.token));
   if (res.status === 401) {
-    // Read the body so we don't leak it, then re-auth and retry once.
+    // Drain the body so we don't leak it, then re-auth and retry once.
+    // If another concurrent caller already triggered the re-auth, our
+    // signIn() call below will just await the same in-flight promise.
     await res.text().catch(() => "");
-    invalidateSession();
+    // Only clear the cached session if it's the SAME session that just
+    // failed - otherwise we'd blow away a fresh one another caller just
+    // finished acquiring, which would loop forever.
+    if (cachedSession && cachedSession.token === session.token) {
+      invalidateSession();
+    }
     const fresh = await signIn();
     res = await fetch(url, withAuth(fresh.token));
   }
