@@ -182,22 +182,50 @@ export default function WidgetCard({
 }
 
 function KpiBody({ widget }: { widget: Widget }) {
-  const row: Record<string, unknown> = widget.data[0] || {};
-  const keys = Object.keys(row);
+  const rows = widget.data || [];
+  const keys = rows.length ? Object.keys(rows[0]) : [];
 
-  // Prefer a key whose value is actually numeric (or a numeric-looking string)
-  // over just taking the first key, since label fields (e.g. "Metric") often
-  // come first in the row the model sends.
-  const numericKey = keys.find((k) => {
-    const v = row[k];
-    return typeof v === "number" || (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)));
-  });
+  // Pick the field to display. Prefer one that's the KPI's known measure
+  // from sourceQuery (has an aggregation function). Otherwise fall back to
+  // the first key whose values are all numeric (skipping label fields).
+  const measureFields = new Set(
+    (widget.sourceQuery?.fields || []).filter((f) => !!f.function).map((f) => f.fieldCaption)
+  );
+  const isRowValueNumeric = (v: unknown) =>
+    typeof v === "number" ||
+    (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)));
 
-  const value = numericKey ? row[numericKey] : keys.length ? row[keys[0]] : "-";
+  const measureKey =
+    keys.find((k) => measureFields.has(k)) ||
+    keys.find((k) => rows.every((r) => isRowValueNumeric((r as Record<string, unknown>)[k]))) ||
+    keys[0];
+
+  // If the query returned multiple rows (which happens when a filter change
+  // widens the range - e.g. a KPI originally built for one month now covers
+  // several months), sum the measure across all rows so the KPI stays a
+  // single number rather than showing only the first row's value.
+  let value: string | number = "-";
+  if (measureKey) {
+    const numericValues = rows
+      .map((r) => (r as Record<string, unknown>)[measureKey])
+      .map((v) => (typeof v === "number" ? v : Number(v)))
+      .filter((n) => Number.isFinite(n));
+
+    if (numericValues.length > 0) {
+      const total = numericValues.reduce((a, b) => a + b, 0);
+      // Show integers as-is (with thousands separators), keep decimals only
+      // when the sum isn't a whole number.
+      value = Number.isInteger(total) ? total.toLocaleString() : total.toFixed(2).replace(/\.?0+$/, "");
+    } else if (rows.length > 0) {
+      // Non-numeric single value (rare for a KPI, but be defensive).
+      const raw = (rows[0] as Record<string, unknown>)[measureKey];
+      value = raw !== undefined && raw !== null ? String(raw) : "-";
+    }
+  }
 
   return (
     <div style={{ marginTop: 8 }}>
-      <div style={{ fontSize: 28, fontWeight: 700 }}>{String(value)}</div>
+      <div style={{ fontSize: 28, fontWeight: 700 }}>{value}</div>
     </div>
   );
 }
