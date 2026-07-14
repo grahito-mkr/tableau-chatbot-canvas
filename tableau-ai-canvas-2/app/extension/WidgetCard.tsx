@@ -4,7 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import type { Widget } from "@/lib/agentLoop";
 import SimpleChart from "./SimpleChart";
 
-export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRemove: () => void }) {
+export default function WidgetCard({
+  widget,
+  onRemove,
+  refreshing,
+  refreshError
+}: {
+  widget: Widget;
+  onRemove: () => void;
+  refreshing?: boolean;
+  refreshError?: string;
+}) {
   const chartAreaRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
 
@@ -51,10 +61,55 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
           justifyContent: "space-between",
           alignItems: "center",
           marginBottom: 6,
-          flexShrink: 0
+          flexShrink: 0,
+          gap: 6
         }}
       >
-        <strong style={{ fontSize: 13 }}>{widget.title}</strong>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}>
+          <strong style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {widget.title}
+          </strong>
+          {refreshing && (
+            <span
+              title="Refreshing for new filters..."
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 10,
+                color: "#666",
+                background: "#f1f5f9",
+                borderRadius: 10,
+                padding: "1px 8px",
+                whiteSpace: "nowrap",
+                flexShrink: 0
+              }}
+            >
+              <Spinner />
+              refreshing
+            </span>
+          )}
+          {!refreshing && refreshError && (
+            <span
+              title={`Refresh failed: ${refreshError}\n\nThe numbers below may be stale.`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                fontSize: 10,
+                color: "#c00",
+                background: "#fee",
+                border: "1px solid #fbb",
+                borderRadius: 10,
+                padding: "1px 8px",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+                cursor: "help"
+              }}
+            >
+              ⚠ stale
+            </span>
+          )}
+        </div>
         <button
           onClick={onRemove}
           title="Remove widget"
@@ -78,14 +133,28 @@ export default function WidgetCard({ widget, onRemove }: { widget: Widget; onRem
         </button>
       </div>
 
-      {widget.type === "kpi" && <KpiBody widget={widget} />}
-      {widget.type === "table" && <TableBody widget={widget} />}
+      {/* Dim the widget body while a refresh is in progress so users see
+          visually that the numbers are being updated (but keep it visible
+          rather than hiding it, so nothing "jumps" when the new data lands). */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          opacity: refreshing ? 0.5 : 1,
+          transition: "opacity 150ms ease"
+        }}
+      >
+        {widget.type === "kpi" && <KpiBody widget={widget} />}
+        {widget.type === "table" && <TableBody widget={widget} />}
 
-      {widget.type !== "kpi" && widget.type !== "table" && (
-        <div ref={chartAreaRef} style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          {size && <SimpleChart widget={widget} width={size.width} height={size.height} />}
-        </div>
-      )}
+        {widget.type !== "kpi" && widget.type !== "table" && (
+          <div ref={chartAreaRef} style={{ flex: 1, minHeight: 0, position: "relative" }}>
+            {size && <SimpleChart widget={widget} width={size.width} height={size.height} />}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -195,5 +264,32 @@ function TableBody({ widget }: { widget: Widget }) {
         <div style={{ padding: 12, color: "#999", fontSize: 12 }}>No rows to display.</div>
       )}
     </div>
+  );
+}
+
+// Tiny inline SVG spinner. Uses SVG animateTransform (no CSS keyframes
+// needed) so it works even in isolated iframe/extension contexts where a
+// global stylesheet might not have loaded yet.
+function Spinner() {
+  return (
+    <svg width={10} height={10} viewBox="0 0 24 24" style={{ display: "inline-block" }}>
+      <circle cx="12" cy="12" r="9" fill="none" stroke="#94a3b8" strokeWidth="3" opacity="0.3" />
+      <path
+        d="M 21 12 A 9 9 0 0 1 12 21"
+        fill="none"
+        stroke="#3b82f6"
+        strokeWidth="3"
+        strokeLinecap="round"
+      >
+        <animateTransform
+          attributeName="transform"
+          type="rotate"
+          from="0 12 12"
+          to="360 12 12"
+          dur="0.9s"
+          repeatCount="indefinite"
+        />
+      </path>
+    </svg>
   );
 }
