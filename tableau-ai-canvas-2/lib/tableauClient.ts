@@ -103,11 +103,21 @@ export async function queryDatasource(fields: FieldSpec[], filters: QueryFilter[
       })),
       filters: filters.map((f) => {
         if (f.type === "range") {
+          // Newer VDS versions require a `quantitativeFilterType`
+          // discriminator on quantitative filters, alongside `filterType`.
+          // 'RANGE' means both min and max are set; use 'MIN' when only a
+          // lower bound is given and 'MAX' when only an upper bound is
+          // given. Without this the whole filter is rejected with:
+          //   Error at 'query.filters': Field 'quantitativeFilterType' is required.
+          const hasMin = f.min !== undefined && f.min !== null;
+          const hasMax = f.max !== undefined && f.max !== null;
+          const quantitativeFilterType = hasMin && hasMax ? "RANGE" : hasMin ? "MIN" : "MAX";
           return {
             field: { fieldCaption: f.field },
             filterType: "QUANTITATIVE_DATE",
-            min: f.min,
-            max: f.max
+            quantitativeFilterType,
+            ...(hasMin ? { min: f.min } : {}),
+            ...(hasMax ? { max: f.max } : {})
           };
         }
         return {
