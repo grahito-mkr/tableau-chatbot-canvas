@@ -49,6 +49,41 @@ async function signIn(): Promise<Session> {
   return cachedSession;
 }
 
+function invalidateSession() {
+  cachedSession = null;
+}
+
+/**
+ * fetch() wrapper that attaches the current auth token and, if the server
+ * returns 401, invalidates the cached session and retries ONCE. Tableau's
+ * PAT session tokens can be invalidated earlier than our 100-minute cache
+ * timeout (session limits, admin sign-out, IP change, etc.), and when
+ * that happens every subsequent request 401s until either the function
+ * goes cold or we force a re-auth. This retry pattern makes that
+ * transparent - the caller just sees a slightly slower first request
+ * after invalidation.
+ */
+async function authorizedFetch(url: string, init: RequestInit): Promise<Response> {
+  const session = await signIn();
+  const withAuth = (token: string): RequestInit => ({
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      "X-Tableau-Auth": token
+    }
+  });
+
+  let res = await fetch(url, withAuth(session.token));
+  if (res.status === 401) {
+    // Read the body so we don't leak it, then re-auth and retry once.
+    await res.text().catch(() => "");
+    invalidateSession();
+    const fresh = await signIn();
+    res = await fetch(url, withAuth(fresh.token));
+  }
+  return res;
+}
+
 export type FieldSpec = { fieldCaption: string; function?: "SUM" | "AVG" | "COUNT" | "MIN" | "MAX"; sortPriority?: number };
 
 // Categorical filter, e.g. Branch in ["Jakarta", "Bandung"].
@@ -66,15 +101,11 @@ export type QueryFilter = SetFilter | RangeFilter;
  * datasource, so Claude knows what it's allowed to ask for.
  */
 export async function getDatasourceMetadata() {
-  const session = await signIn();
   const luid = process.env.TABLEAU_DATASOURCE_LUID!;
 
-  const res = await fetch(`${SERVER}/api/v1/vizql-data-service/read-metadata`, {
+  const res = await authorizedFetch(`${SERVER}/api/v1/vizql-data-service/read-metadata`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Tableau-Auth": session.token
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ datasource: { datasourceLuid: luid } })
   });
 
@@ -90,7 +121,6 @@ export async function getDatasourceMetadata() {
  * invented by the model.
  */
 export async function queryDatasource(fields: FieldSpec[], filters: QueryFilter[] = []) {
-  const session = await signIn();
   const luid = process.env.TABLEAU_DATASOURCE_LUID!;
 
   const body = {
@@ -128,12 +158,9 @@ export async function queryDatasource(fields: FieldSpec[], filters: QueryFilter[
     }
   };
 
-  const res = await fetch(`${SERVER}/api/v1/vizql-data-service/query-datasource`, {
+  const res = await authorizedFetch(`${SERVER}/api/v1/vizql-data-service/query-datasource`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Tableau-Auth": session.token
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
 
