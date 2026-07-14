@@ -17,6 +17,7 @@ export default function WidgetCard({
 }) {
   const chartAreaRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const [errorExpanded, setErrorExpanded] = useState(false);
 
   // Bar/line charts are drawn as SVG in the browser (see SimpleChart.tsx),
   // so we just need the container's current size. ResizeObserver keeps it
@@ -90,8 +91,9 @@ export default function WidgetCard({
             </span>
           )}
           {!refreshing && refreshError && (
-            <span
-              title={`Refresh failed: ${refreshError}\n\nThe numbers below may be stale.`}
+            <button
+              onClick={() => setErrorExpanded((v) => !v)}
+              title={errorExpanded ? "Hide error details" : "Show error details"}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -103,11 +105,11 @@ export default function WidgetCard({
                 padding: "1px 8px",
                 whiteSpace: "nowrap",
                 flexShrink: 0,
-                cursor: "help"
+                cursor: "pointer"
               }}
             >
-              ⚠ stale
-            </span>
+              ⚠ stale {errorExpanded ? "▲" : "▼"}
+            </button>
           )}
         </div>
         <button
@@ -132,6 +134,31 @@ export default function WidgetCard({
           &times;
         </button>
       </div>
+
+      {/* Expanded error detail - shows the raw refresh error when the
+          "stale" badge is clicked. Kept collapsed by default so it doesn't
+          take space when things are working. */}
+      {errorExpanded && refreshError && (
+        <div
+          style={{
+            fontSize: 11,
+            color: "#7a1414",
+            background: "#fff5f5",
+            border: "1px solid #fbb",
+            borderRadius: 4,
+            padding: "6px 8px",
+            marginBottom: 6,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            maxHeight: 120,
+            overflow: "auto",
+            flexShrink: 0
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>Refresh failed:</div>
+          {refreshError}
+        </div>
+      )}
 
       {/* Dim the widget body while a refresh is in progress so users see
           visually that the numbers are being updated (but keep it visible
