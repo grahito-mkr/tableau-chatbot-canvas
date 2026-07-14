@@ -111,6 +111,7 @@ export default function WidgetCard({
         <button
           onClick={onRemove}
           title="Remove widget"
+          className="rgl-no-drag"
           style={{
             border: "none",
             background: "#f1f1f1",
@@ -135,6 +136,7 @@ export default function WidgetCard({
           need to see - hiding it behind a click just adds friction. */}
       {refreshError && !refreshing && (
         <div
+          className="rgl-no-drag"
           style={{
             fontSize: 11,
             color: "#7a1414",
@@ -268,7 +270,7 @@ function TableBody({ widget }: { widget: Widget }) {
   };
 
   return (
-    <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: 8 }}>
+    <div className="rgl-no-drag" style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: 8 }}>
       <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
         <thead style={{ position: "sticky", top: 0, background: "#fff" }}>
           <tr>
