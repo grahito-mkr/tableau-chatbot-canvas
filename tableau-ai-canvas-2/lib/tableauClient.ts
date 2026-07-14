@@ -103,12 +103,10 @@ export async function queryDatasource(fields: FieldSpec[], filters: QueryFilter[
       })),
       filters: filters.map((f) => {
         if (f.type === "range") {
-          // Newer VDS versions require a `quantitativeFilterType`
-          // discriminator on quantitative filters, alongside `filterType`.
-          // 'RANGE' means both min and max are set; use 'MIN' when only a
-          // lower bound is given and 'MAX' when only an upper bound is
-          // given. Without this the whole filter is rejected with:
-          //   Error at 'query.filters': Field 'quantitativeFilterType' is required.
+          // Per Tableau's VDS OpenAPI schema, QUANTITATIVE_DATE filters use
+          // `minDate`/`maxDate` (RFC 3339 date strings, e.g. "2024-09-01"),
+          // NOT the generic `min`/`max` used by QUANTITATIVE_NUMERICAL.
+          // Also required: `quantitativeFilterType` = RANGE | MIN | MAX.
           const hasMin = f.min !== undefined && f.min !== null;
           const hasMax = f.max !== undefined && f.max !== null;
           const quantitativeFilterType = hasMin && hasMax ? "RANGE" : hasMin ? "MIN" : "MAX";
@@ -116,8 +114,8 @@ export async function queryDatasource(fields: FieldSpec[], filters: QueryFilter[
             field: { fieldCaption: f.field },
             filterType: "QUANTITATIVE_DATE",
             quantitativeFilterType,
-            ...(hasMin ? { min: f.min } : {}),
-            ...(hasMax ? { max: f.max } : {})
+            ...(hasMin ? { minDate: f.min } : {}),
+            ...(hasMax ? { maxDate: f.max } : {})
           };
         }
         return {
