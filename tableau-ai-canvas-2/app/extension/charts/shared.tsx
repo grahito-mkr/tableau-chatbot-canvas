@@ -22,7 +22,7 @@ export function colorForIndex(i: number) {
 export function longestLabel(rows: Record<string, unknown>[], key: string) {
   let m = 0;
   for (const r of rows) {
-    const s = String(r[key] ?? "");
+    const s = formatCategoryLabel(r[key]);
     if (s.length > m) m = s.length;
   }
   return m;
@@ -90,4 +90,101 @@ export function ErrorBox({ message }: { message: string }) {
       {message}
     </div>
   );
+}
+
+/**
+ * Convert a category axis value to a consistent display label. This is
+ * called for every axis tick / bar label / point tooltip, so it needs to
+ * be cheap and stable across renders.
+ *
+ * The main job is normalizing DATE VALUES so a widget's axis looks the
+ * same whether it was first populated by the initial build (where Claude
+ * often emits friendly strings like "2024-08" or "Aug 2024") or by a
+ * later filter-driven requery (where VDS returns raw ISO timestamps like
+ * "2024-08-01T00:00:00"). Both should show up on the axis as "Aug 24".
+ *
+ * Detection is conservative: we ONLY reformat values that look
+ * unambiguously like ISO 8601 dates. Everything else - department names,
+ * region codes, numeric IDs - passes through untouched.
+ */
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const ISO_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const YEAR_MONTH_RE = /^(\d{4})-(\d{2})$/;
+
+export function formatCategoryLabel(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "number") {
+    // A very large number MIGHT be an epoch timestamp, but numeric
+    // categorical values (branch id, employee id) are also common - so
+    // don't try to be clever here, just stringify.
+    return String(v);
+  }
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return shortMonthYear(v.getFullYear(), v.getMonth());
+  }
+  if (typeof v !== "string") return String(v);
+
+  // ISO datetime string, e.g. "2024-08-01T00:00:00" or "2024-08-01T00:00:00Z"
+  const m1 = v.match(ISO_DATETIME_RE);
+  if (m1) {
+    const year = parseInt(m1[1], 10);
+    const month = parseInt(m1[2], 10) - 1;
+    return shortMonthYear(year, month);
+  }
+
+  // ISO date string, e.g. "2024-08-01"
+  const m2 = v.match(ISO_DATE_RE);
+  if (m2) {
+    const year = parseInt(m2[1], 10);
+    const month = parseInt(m2[2], 10) - 1;
+    const day = parseInt(m2[3], 10);
+    // If it's the first of the month, treat as a monthly label; otherwise
+    // show the full date. This matches how Tableau's own axis labels
+    // behave when the granularity of the field is monthly.
+    if (day === 1) return shortMonthYear(year, month);
+    return `${SHORT_MONTHS[month]} ${day}, ${String(year).slice(-2)}`;
+  }
+
+  // Year-month string, e.g. "2024-08"
+  const m3 = v.match(YEAR_MONTH_RE);
+  if (m3) {
+    const year = parseInt(m3[1], 10);
+    const month = parseInt(m3[2], 10) - 1;
+    return shortMonthYear(year, month);
+  }
+
+  return v;
+}
+
+function shortMonthYear(year: number, monthZeroIndexed: number): string {
+  const m = SHORT_MONTHS[monthZeroIndexed] || "?";
+  return `${m} ${String(year).slice(-2)}`;
+}
+
+/**
+ * Parse a value to a comparable sort key. Numbers stay numeric, ISO dates
+ * become their epoch time, and everything else falls back to a
+ * lowercased string. Used by chart sorters so we can order by category
+ * or measure with sensible semantics regardless of what shape the data
+ * arrives in.
+ */
+export function sortKey(v: unknown): number | string {
+  if (v === null || v === undefined) return -Infinity;
+  if (typeof v === "number") return v;
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "string") {
+    if (ISO_DATETIME_RE.test(v) || ISO_DATE_RE.test(v)) {
+      const t = Date.parse(v);
+      if (!isNaN(t)) return t;
+    }
+    if (YEAR_MONTH_RE.test(v)) {
+      const t = Date.parse(v + "-01");
+      if (!isNaN(t)) return t;
+    }
+    const asNum = Number(v);
+    if (!isNaN(asNum) && v.trim() !== "") return asNum;
+    return v.toLowerCase();
+  }
+  return String(v).toLowerCase();
 }
