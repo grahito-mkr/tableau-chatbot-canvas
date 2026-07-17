@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import type { Widget } from "@/lib/agentLoop";
-import { ErrorBox } from "./charts/shared";
+import { ErrorBox, sortKey } from "./charts/shared";
 import { HorizontalBar, VerticalBar } from "./charts/bar";
 import { LineOrAreaChart } from "./charts/line";
 import { PieChart } from "./charts/pie";
@@ -218,7 +218,7 @@ function buildChartModel(widget: Widget): ChartModel {
     if (!result.ok) return { error: result.err };
     return {
       kind: "pie",
-      rows,
+      rows: sortByMeasureDesc(rows, result.measureKey),
       categoryKey: result.categoryKey,
       measureKey: result.measureKey,
       donut: kindHint === "donut"
@@ -296,7 +296,12 @@ function buildChartModel(widget: Widget): ChartModel {
       isNumericByShape
     );
     if (!result.ok) return { error: result.err };
-    return { kind: kindHint, rows, categoryKey: result.categoryKey, measureKey: result.measureKey };
+    return {
+      kind: kindHint,
+      rows: sortByCategoryAsc(rows, result.categoryKey),
+      categoryKey: result.categoryKey,
+      measureKey: result.measureKey
+    };
   }
 
   // ---- Default: bar (vertical or horizontal) ------------------------------
@@ -310,12 +315,48 @@ function buildChartModel(widget: Widget): ChartModel {
     isNumericByShape
   );
   if (!barResult.ok) return { error: barResult.err };
+  // Sort intelligently based on what the category looks like:
+  //   - Date-like categories (Month, Order Date, etc.) sort chronologically
+  //     so a time-series bar chart runs left-to-right in time order.
+  //   - Everything else sorts by measure descending, so "top N" charts and
+  //     categorical breakdowns stay in a stable meaningful order across
+  //     filter changes. Without this, requerying with new filters can
+  //     shuffle the bars into random order because VDS returns rows in
+  //     whichever order matched the underlying index.
+  const sortedRows = looksDateLike(rows, barResult.categoryKey)
+    ? sortByCategoryAsc(rows, barResult.categoryKey)
+    : sortByMeasureDesc(rows, barResult.measureKey);
   return {
     kind: isHorizontalBar ? "horizontal-bar" : "vertical-bar",
-    rows,
+    rows: sortedRows,
     categoryKey: barResult.categoryKey,
     measureKey: barResult.measureKey
   };
+}
+
+/**
+ * Cheap check for whether a column looks like it contains dates. Used to
+ * decide whether a bar chart should sort by category (time-series) or by
+ * measure (top-N). Only samples up to 5 rows to avoid a full scan of
+ * large datasets - if the first several rows all look like dates it's
+ * almost certainly a date column.
+ */
+function looksDateLike(rows: Record<string, unknown>[], key: string): boolean {
+  const sample = rows.slice(0, 5);
+  let dateLikeCount = 0;
+  let seenCount = 0;
+  for (const r of sample) {
+    const v = r[key];
+    if (v === null || v === undefined || v === "") continue;
+    seenCount++;
+    if (v instanceof Date) {
+      dateLikeCount++;
+      continue;
+    }
+    if (typeof v !== "string") continue;
+    if (/^\d{4}-\d{2}(-\d{2})?([T ].*)?$/.test(v)) dateLikeCount++;
+  }
+  return seenCount > 0 && dateLikeCount / seenCount >= 0.6;
 }
 
 function pickMeasureOnly(
@@ -362,4 +403,40 @@ function pickMeasureAndCategory(
     return { ok: true, measureKey: keys[1], categoryKey: keys[0] };
   }
   return { ok: false, err: "Couldn't identify a category and measure in the data." };
+}
+
+/**
+ * Sort rows by the numeric measure column, largest first. Used to keep bar
+ * and pie charts in a stable, meaningful order across filter changes -
+ * previously the row order came straight from VDS, which returned rows in
+ * whichever order matched the underlying index, and a filter change could
+ * reshuffle them (turning "Top 10 by count" into random-order bars).
+ */
+function sortByMeasureDesc(rows: Record<string, unknown>[], measureKey: string) {
+  const copy = rows.slice();
+  copy.sort((a, b) => {
+    const av = Number(a[measureKey]);
+    const bv = Number(b[measureKey]);
+    const anum = Number.isFinite(av) ? av : -Infinity;
+    const bnum = Number.isFinite(bv) ? bv : -Infinity;
+    return bnum - anum;
+  });
+  return copy;
+}
+
+/**
+ * Sort rows by category ascending. Uses sortKey() so dates sort
+ * chronologically, numbers numerically, and text alphabetically. This is
+ * the right default for line/area charts (time series should always run
+ * left-to-right in time order regardless of source row order).
+ */
+function sortByCategoryAsc(rows: Record<string, unknown>[], categoryKey: string) {
+  const copy = rows.slice();
+  copy.sort((a, b) => {
+    const av = sortKey(a[categoryKey]);
+    const bv = sortKey(b[categoryKey]);
+    if (typeof av === "number" && typeof bv === "number") return av - bv;
+    return String(av).localeCompare(String(bv));
+  });
+  return copy;
 }
