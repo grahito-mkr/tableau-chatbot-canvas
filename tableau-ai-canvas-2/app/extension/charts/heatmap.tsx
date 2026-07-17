@@ -1,6 +1,6 @@
 "use client";
 
-import { formatNumber, longestLabel, truncate } from "./shared";
+import { formatCategoryLabel, formatNumber, longestLabel, truncate } from "./shared";
 
 type Row = Record<string, unknown>;
 
@@ -25,6 +25,9 @@ export function Heatmap({
   const cellMap: Record<string, number> = {};
 
   for (const r of rows) {
+    // Keep raw stringified value as the bucket key so identical
+    // dates/values from different sources (initial build vs. requery)
+    // group into the same cell even if their display format differs.
     const x = String(r[xKey] ?? "");
     const y = String(r[yKey] ?? "");
     const v = Number(r[measureKey]) || 0;
@@ -86,7 +89,7 @@ export function Heatmap({
                 fill={colorFor(v)}
               >
                 <title>
-                  {x} × {y}: {formatNumber(v)}
+                  {formatCategoryLabel(x)} × {formatCategoryLabel(y)}: {formatNumber(v)}
                 </title>
               </rect>
               {cellW >= 30 && cellH >= 16 && (
@@ -115,7 +118,7 @@ export function Heatmap({
           fontSize={10}
           fill="#333"
         >
-          {truncate(y, Math.max(10, Math.floor((marginLeft - 12) / 6)))}
+          {truncate(formatCategoryLabel(y), Math.max(10, Math.floor((marginLeft - 12) / 6)))}
         </text>
       ))}
 
@@ -134,7 +137,7 @@ export function Heatmap({
             textAnchor={rotate ? "end" : "middle"}
             transform={rotate ? `rotate(-45 ${cx} ${cy})` : undefined}
           >
-            {truncate(x, 24)}
+            {truncate(formatCategoryLabel(x), 24)}
           </text>
         );
       })}
