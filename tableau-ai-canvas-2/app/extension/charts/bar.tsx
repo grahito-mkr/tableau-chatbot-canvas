@@ -2,6 +2,7 @@
 
 import {
   colorForIndex,
+  formatCategoryLabel,
   formatNumber,
   longestLabel,
   longestNumberLabel,
@@ -88,7 +89,7 @@ export function VerticalBar({
           <g key={`bar-${i}`}>
             <rect x={bx} y={by} width={bw} height={bh} fill={color}>
               <title>
-                {String(r[categoryKey])}: {formatNumber(v)}
+                {formatCategoryLabel(r[categoryKey])}: {formatNumber(v)}
               </title>
             </rect>
             {bw >= 12 && (
@@ -112,7 +113,7 @@ export function VerticalBar({
       {rows.map((r, i) => {
         const cx = marginLeft + xForIndex(i);
         const cy = marginTop + innerH + 12;
-        const label = String(r[categoryKey] ?? "");
+        const label = formatCategoryLabel(r[categoryKey]);
         const rotate = rows.length > 6;
         return (
           <text
@@ -211,7 +212,7 @@ export function HorizontalBar({
           <g key={`hbar-${i}`}>
             <rect x={bx} y={by} width={bw} height={bh} fill={color}>
               <title>
-                {String(r[categoryKey])}: {formatNumber(v)}
+                {formatCategoryLabel(r[categoryKey])}: {formatNumber(v)}
               </title>
             </rect>
             {bh >= 10 && (
@@ -231,7 +232,7 @@ export function HorizontalBar({
 
       {rows.map((r, i) => {
         const cy = marginTop + yForIndex(i) + 3;
-        const label = String(r[categoryKey] ?? "");
+        const label = formatCategoryLabel(r[categoryKey]);
         return (
           <text
             key={`ylab-${i}`}
