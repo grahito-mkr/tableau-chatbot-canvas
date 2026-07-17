@@ -2,6 +2,7 @@
 
 import {
   colorForIndex,
+  formatCategoryLabel,
   formatNumber,
   longestLabel,
   longestNumberLabel,
@@ -91,7 +92,7 @@ export function LineOrAreaChart({
           <g key={`pt-${i}`}>
             <circle cx={cx} cy={cy} r={3} fill={color} />
             <title>
-              {String(r[categoryKey])}: {formatNumber(Number(r[measureKey]) || 0)}
+              {formatCategoryLabel(r[categoryKey])}: {formatNumber(Number(r[measureKey]) || 0)}
             </title>
           </g>
         );
@@ -109,7 +110,7 @@ export function LineOrAreaChart({
       {rows.map((r, i) => {
         const cx = marginLeft + xForIndex(i);
         const cy = marginTop + innerH + 12;
-        const label = String(r[categoryKey] ?? "");
+        const label = formatCategoryLabel(r[categoryKey]);
         const rotate = rows.length > 6;
         return (
           <text
